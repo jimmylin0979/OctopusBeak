@@ -18,7 +18,14 @@ import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { createUsagePinger, postUsagePing, USAGE_PING_URL, usageOsVersion, type UsageFailureBook } from "../src/lib/settings/usage-statistics.ts";
+import {
+  createUsagePinger,
+  postUsagePing,
+  USAGE_PING_URL,
+  usageHost,
+  usageOsVersion,
+  type UsageFailureBook,
+} from "../src/lib/settings/usage-statistics.ts";
 import {
   appUpdateNotification,
   appUpdatesAutoDownload,
@@ -171,11 +178,27 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
 );
 // Automation shutdown records each run's outcome through the ledger, so the
 // ledger close waits for it this long before going ahead.
+/**
+ * The operating-system release a ping or Error report names: the macOS version, or on Linux the
+ * distribution's VERSION_ID (24.04), never the kernel version process.getSystemVersion() gives there.
+ */
+function systemVersion(): string {
+  if (process.platform !== "linux") return process.getSystemVersion();
+  try {
+    return /^VERSION_ID="?([^"\n]*)"?$/mu.exec(readFileSync("/etc/os-release", "utf8"))?.[1] ?? "0.0";
+  } catch {
+    return "0.0";
+  }
+}
+
+const host = usageHost(process.platform, process.arch);
+
 /** What an Error report says about this install (ADR 0081): the same fields as the usage ping. */
 function errorReportContext() {
   return {
     appVersion: app.getVersion(),
-    osVersion: usageOsVersion(process.getSystemVersion()),
+    osVersion: usageOsVersion(systemVersion()),
+    host,
     locale: app.getLocale().startsWith("zh") ? ("zh-TW" as const) : ("en" as const),
   };
 }
@@ -513,7 +536,8 @@ async function start() {
     readSettings: automationSettings.read,
     writeSettings: (patch) => automationSettings.write({ ...automationSettings.read(), ...patch }),
     appVersion: () => app.getVersion(),
-    systemVersion: () => process.getSystemVersion(),
+    systemVersion,
+    host: () => host,
     locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
     firstLaunch: () => statSync(userData).birthtime,
     readFailures: () => {

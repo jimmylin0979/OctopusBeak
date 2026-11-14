@@ -33,6 +33,11 @@ const syntheticEnvironment = () => ({
   [credentialKey("CA_PASSWORD")]: "synthetic-certificate-password",
 });
 
+// Yuanta Trade is Platform-unavailable on Linux (CONTEXT.md); this
+// check covers its macOS behavior, so it runs as macOS on any host. Node gives each
+// check file its own process, so the stub stays in this file.
+Object.defineProperty(process, "platform", { value: "darwin" });
+
 test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", async () => {
   const task = taskById("yuanta-trade-statements");
   assert.ok(task);

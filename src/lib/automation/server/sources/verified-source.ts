@@ -3,6 +3,7 @@ import type {
   AutomationCredentialRedaction,
   AutomationExternalPrerequisite,
   AutomationLocalizedText,
+  AutomationPlatform,
   AutomationTaskKind,
   SupportedSource,
 } from "../../types.ts";
@@ -125,6 +126,8 @@ export type VerifiedSource = SupportedSource & Readonly<{
   /** Short English name used in Statement Selection errors. */
   label: string;
   enabledKey: string;
+  /** Supported platforms on which the Institution offers no External prerequisite this source needs. */
+  unavailablePlatforms?: readonly AutomationPlatform[];
   integrationNamespace: string;
   /** While the source is enabled, a preview product with the same Institution and product is hidden and not collected. */
   coverage?: readonly InstitutionProductCoverage[];

@@ -8,7 +8,7 @@
 
 ## 下載與安裝
 
-目前只提供 **macOS Apple Silicon（arm64）** 版本。Windows、Linux 與 Intel Mac 尚未支援。
+目前只提供 **macOS Apple Silicon（arm64）** 安裝版。**Ubuntu 24.04 / 26.04（x64）** 可以從原始碼執行，請見下方「開發者資訊」裡的 Ubuntu 說明；Ubuntu 安裝版尚未提供。Windows 與 Intel Mac 尚未支援。
 
 [下載最新版 OctopusBeak](https://github.com/WangWilly/OctopusBeak/releases/latest)
 
@@ -142,6 +142,17 @@ npm run desktop:dev
 
 桌面介面僅支援 Electron，並從 `#/overview` 載入靜態渲染器。
 
+**Ubuntu 24.04 / 26.04（x64）**：第一次執行前，先準備系統環境，再用 `doctor` 確認：
+
+```bash
+bash scripts/setup-ubuntu.sh   # 以自己的帳號執行，需要時會要求 sudo
+mise install                   # 或 nvm：安裝 .tool-versions 指定的 Node 版本
+npm install
+npm run doctor                 # 只檢查、不修改系統，失敗時會印出修正指令
+```
+
+`setup-ubuntu.sh` 會安裝 Electron 與 Chromium 需要的系統函式庫和 `gnome-keyring`，並替這份 checkout 的 Electron 安裝 AppArmor profile，讓 Electron 的 sandbox 在 Ubuntu 24.04 之後的 user namespace 限制下也能運作（[ADR 0138](docs/adr/0138-electron-sandbox-on-ubuntu-through-an-apparmor-profile.md)）。登入資料一定要加密儲存：沒有可用的金鑰圈時，App 會拒絕儲存；在 GNOME 與 KDE 以外的桌面，請加上 `npm run desktop:dev -- --password-store=gnome-libsecret`。元大證券（證券下單）需要的安控元件只有 Windows 與 macOS 版，因此在 Ubuntu 上無法啟用。
+
 開發啟動器會監督該次 Electron 程序群組；關閉、外接磁碟失聯與錄影後清理方式請見[桌面開發生命週期](docs/runbooks/desktop-development.md)。
 
 建立未簽署的本機應用程式：
@@ -168,7 +179,7 @@ npm run workflow:dev -- fixture
 
 新增與測試 workflow 的步驟請參閱[開發指引](docs/agents/workflow-development.md)。正式的銀行、發票與同步工作請從桌面 App 的自動化介面執行。
 
-開發版與安裝版都把金融資料存在 `~/Library/Application Support/OctopusBeak/data/pglite/`。設定 `OCTOPUSBEAK_USER_DATA` 可改用其他資料目錄。
+開發版與安裝版都把金融資料存在 `~/Library/Application Support/OctopusBeak/data/pglite/`（Ubuntu 上是 `~/.config/OctopusBeak/data/pglite/`）。設定 `OCTOPUSBEAK_USER_DATA` 可改用其他資料目錄。
 
 </details>
 

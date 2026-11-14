@@ -1,3 +1,4 @@
+import { platformUnavailable } from "../types.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_CREDENTIAL_KEYS,
@@ -123,6 +124,7 @@ function coreCredentialGroup(
   return {
     ...group,
     enabled,
+    ...(platformUnavailable(group, process.platform) ? { platformUnavailable: true as const } : {}),
     selectedStatementTypeIds,
     statementSetupRequired,
     storedCredentialFileNames: {},

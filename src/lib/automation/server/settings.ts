@@ -1,5 +1,6 @@
 import type { AutomationSettingsFile, AutomationSettingsStore } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
+import { platformUnavailable } from "../types.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { attachedPreviewSource, attachedStatementType } from "../../preview-sources/attached-products.ts";
 import { previewVisibility, sameVisibility, visibleProducts } from "../../preview-sources/visibility.ts";
@@ -16,10 +17,16 @@ export function automationBusinessTimezone(settings: AutomationSettingsFile) {
   return systemSettings(settings).systemTimezone;
 }
 
-/** Whether each bank group is on, from settings.json alone; a shell variable never turns one on. */
-export function automationGroupEnabledStatus(settings: AutomationSettingsFile) {
+/**
+ * Whether each bank group is on, from settings.json alone; a shell variable never turns one on.
+ * A Platform-unavailable source is off on that platform whatever settings.json says.
+ */
+export function automationGroupEnabledStatus(settings: AutomationSettingsFile, platform: string = process.platform) {
   return Object.fromEntries(
-    AUTOMATION_CREDENTIAL_GROUPS.map((group) => [group.id, envFlagEnabled(settings[group.enabledKey])]),
+    AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
+      group.id,
+      envFlagEnabled(settings[group.enabledKey]) && !platformUnavailable(group, platform),
+    ]),
   );
 }
 

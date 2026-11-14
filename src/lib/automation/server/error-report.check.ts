@@ -144,3 +144,14 @@ test("non-string inputs are refused as invalid", () => {
   assert.throws(() => buildErrorReport({ ...INPUT, taskId: null } as never, CONTEXT), InvalidErrorReport);
   assert.throws(() => buildErrorReport({ ...INPUT, stage: 3 } as never, CONTEXT), InvalidErrorReport);
 });
+
+test("a Linux App's Error report uses schema 2 and names its platform", () => {
+  const report = buildErrorReport(INPUT, { ...CONTEXT, osVersion: "24.04", host: { platform: "linux", arch: "x64" } });
+  assert.equal(report.schema, 2);
+  assert.equal(report.platform, "linux");
+  assert.equal(report.arch, "x64");
+  const macos = buildErrorReport(INPUT, CONTEXT);
+  assert.equal(macos.schema, 1);
+  assert.equal("platform" in macos, false);
+  assert.equal(macos.arch, "arm64");
+});

@@ -13,6 +13,7 @@ import {
   createUsagePinger,
   isoWeek,
   usageCohortWeek,
+  usageHost,
   usageOsVersion,
   usagePingOutcome,
   USAGE_PING_FIELDS,
@@ -74,7 +75,8 @@ test("the payload carries exactly the allowed fields", () => {
     cohortWeek: "2026-W43",
     lastSentDay: "2026-10-28",
   });
-  assert.deepEqual(Object.keys(ping), [...USAGE_PING_FIELDS]);
+  // A macOS App sends schema 2 unchanged: every field but the Linux-only platform.
+  assert.deepEqual(Object.keys(ping).sort(), USAGE_PING_FIELDS.filter((field) => field !== "platform").sort());
   assert.deepEqual(ping, {
     schema: 2,
     appVersion: "0.9.5",
@@ -302,4 +304,22 @@ test("failures are recorded only while statistics are on, sent in the ping, and 
   run.pinger.recordFailures([{ source: "a", code: "b", stage: "c" }]);
   run.pinger.answer(false);
   assert.deepEqual(run.book(), {});
+});
+
+test("a Linux App sends schema 3, which names its platform and real architecture", () => {
+  const ping = buildUsagePing({
+    now: new Date("2026-10-29T02:00:00Z"),
+    appVersion: "0.9.5",
+    systemVersion: "24.04",
+    host: usageHost("linux", "x64"),
+    locale: "en",
+    cohortWeek: "2026-W43",
+    lastSentDay: "2026-10-28",
+  });
+  assert.equal(
+    JSON.stringify(ping, [...USAGE_PING_FIELDS]),
+    '{"schema":3,"appVersion":"0.9.5","osVersion":"24.04","platform":"linux","arch":"x64","locale":"en",'
+      + '"cohortWeek":"2026-W43","firstThisWeek":false,"firstThisMonth":false,"failures":[]}',
+  );
+  assert.deepEqual(usageHost("darwin", "arm64"), { platform: "darwin", arch: "arm64" });
 });

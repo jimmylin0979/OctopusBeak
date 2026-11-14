@@ -30,6 +30,8 @@ import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.t
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
+  /** The source is Platform-unavailable where this App runs. */
+  platformUnavailable?: true;
   selectedStatementTypeIds: readonly string[];
   statementSetupRequired: boolean;
   storedCredentialFileNames: Readonly<Record<string, string>>;
