@@ -457,6 +457,7 @@ test("a hand-off that throws becomes a failed install", async () => {
     hasActiveRun: () => false,
     onChange: () => {},
     onReady: () => {},
+    onAvailable: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
     reportError: (code) => errors.push(code),
