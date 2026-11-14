@@ -24,6 +24,15 @@ on:
         description: Existing vX.Y.Z tag to retry; required when operation is retry
         required: false
         type: string
+      targets:
+        description: Which installers to build; ubuntu skips the signed macOS build
+        required: true
+        type: choice
+        options:
+          - both
+          - macos
+          - ubuntu
+        default: both
 
 permissions:
   contents: read
@@ -182,12 +191,11 @@ jobs:
         id: source
         run: echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Build macOS arm64 into the Draft Release
+  # The version commit, tag and Draft Release are made once, here, so every installer builds the same tag.
+  version:
+    name: Choose the version and create the Draft Release
     needs: preflight
-    runs-on: macos-15
-    environment:
-      name: release
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     outputs:
@@ -197,7 +205,6 @@ jobs:
       BUMP_LEVEL: ${{ inputs.bump }}
       RETRY_TAG: ${{ inputs.retry_tag }}
       TESTED_SHA: ${{ needs.preflight.outputs.tested_sha }}
-      OCTOPUSBEAK_NOTARY_PROFILE: OctopusBeakNotary
     steps:
       - name: Checkout tested release source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -211,22 +218,6 @@ jobs:
         with:
           node-version: 25.9.0
           cache: npm
-
-      # onnxruntime-node's install script downloads its native binary, and a
-      # transient download-host timeout fails the whole install (seen in CI).
-      # npm ci starts from an empty node_modules each time, so a retry is safe.
-      - name: Install dependencies
-        run: |
-          for attempt in 1 2 3; do
-            if npm ci; then
-              exit 0
-            fi
-            if [[ "$attempt" -lt 3 ]]; then
-              echo "npm ci failed; retrying in 15s (attempt $attempt of 3)." >&2
-              sleep 15
-            fi
-          done
-          exit 1
 
       - name: Validate source has not changed
         run: |
@@ -253,30 +244,6 @@ jobs:
 
           if [[ -n "$(git status --porcelain)" ]]; then
             echo "Release checkout is not clean." >&2
-            exit 1
-          fi
-
-      - name: Validate release secrets
-        env:
-          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          OCTOPUSBEAK_USAGE_PING_URL: ${{ secrets.OCTOPUSBEAK_USAGE_PING_URL }}
-        run: |
-          set -euo pipefail
-          missing=()
-          [[ -n "$MACOS_CERTIFICATE_BASE64" ]] || missing+=(MACOS_CERTIFICATE_BASE64)
-          [[ -n "$MACOS_CERTIFICATE_PASSWORD" ]] || missing+=(MACOS_CERTIFICATE_PASSWORD)
-          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
-          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
-          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
-          # ADR 0078: a release without the usage endpoint would silently never ask or send.
-          [[ -n "$OCTOPUSBEAK_USAGE_PING_URL" ]] || missing+=(OCTOPUSBEAK_USAGE_PING_URL)
-
-          if (( ${#missing[@]} > 0 )); then
-            printf 'Missing release secrets: %s\n' "${missing[*]}" >&2
             exit 1
           fi
 
@@ -308,6 +275,93 @@ jobs:
 
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Create or reuse Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if release_draft="$(gh release view "$RELEASE_TAG" --json isDraft -q .isDraft 2>/dev/null)"; then
+            if [[ "$release_draft" != "true" ]]; then
+              echo "Release is already published and cannot be changed: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            echo "Reusing existing Draft Release $RELEASE_TAG."
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --title "OctopusBeak $RELEASE_TAG" \
+              --verify-tag
+          fi
+
+  release:
+    name: Build macOS arm64 into the Draft Release
+    needs: [preflight, version]
+    if: ${{ inputs.targets != 'ubuntu' }}
+    runs-on: macos-15
+    environment:
+      name: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+      OCTOPUSBEAK_NOTARY_PROFILE: OctopusBeakNotary
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ needs.version.outputs.release_tag }}
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 25.9.0
+          cache: npm
+
+      # onnxruntime-node's install script downloads its native binary, and a
+      # transient download-host timeout fails the whole install (seen in CI).
+      # npm ci starts from an empty node_modules each time, so a retry is safe.
+      - name: Install dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "npm ci failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
+
+
+      - name: Validate release secrets
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          OCTOPUSBEAK_USAGE_PING_URL: ${{ secrets.OCTOPUSBEAK_USAGE_PING_URL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$MACOS_CERTIFICATE_BASE64" ]] || missing+=(MACOS_CERTIFICATE_BASE64)
+          [[ -n "$MACOS_CERTIFICATE_PASSWORD" ]] || missing+=(MACOS_CERTIFICATE_PASSWORD)
+          [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          # ADR 0078: a release without the usage endpoint would silently never ask or send.
+          [[ -n "$OCTOPUSBEAK_USAGE_PING_URL" ]] || missing+=(OCTOPUSBEAK_USAGE_PING_URL)
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
 
       - name: Configure signing keychain
         env:
@@ -454,24 +508,6 @@ jobs:
             done
           ) > SHA256SUMS.txt
 
-      - name: Create or reuse Draft Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if release_draft="$(gh release view "$RELEASE_TAG" --json isDraft -q .isDraft 2>/dev/null)"; then
-            if [[ "$release_draft" != "true" ]]; then
-              echo "Release is already published and cannot be changed: $RELEASE_TAG" >&2
-              exit 1
-            fi
-            echo "Reusing existing Draft Release $RELEASE_TAG."
-          else
-            gh release create "$RELEASE_TAG" \
-              --draft \
-              --generate-notes \
-              --title "OctopusBeak $RELEASE_TAG" \
-              --verify-tag
-          fi
 
       - name: Upload installers, update feed and checksum
         env:
@@ -495,19 +531,20 @@ jobs:
   # creates the version commit and tag this one builds.
   linux:
     name: Build and sign Ubuntu amd64
-    needs: release
+    needs: [version, release]
+    if: ${{ always() && inputs.targets != 'macos' && needs.version.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
     runs-on: ubuntu-24.04
     environment:
       name: release
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+      RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
     steps:
       - name: Checkout the release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: refs/tags/${{ needs.release.outputs.release_tag }}
+          ref: refs/tags/${{ needs.version.outputs.release_tag }}
           fetch-depth: 0
           lfs: true
 
@@ -625,7 +662,7 @@ jobs:
 
   pages-deploy:
     name: Deploy the apt repository to Pages
-    needs: [release, linux]
+    needs: [version, linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -641,7 +678,7 @@ jobs:
       - name: Checkout the release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: refs/tags/${{ needs.release.outputs.release_tag }}
+          ref: refs/tags/${{ needs.version.outputs.release_tag }}
           lfs: true
 
       - name: Download the signed apt repository
@@ -665,19 +702,21 @@ jobs:
   # The Draft Release becomes public only after a clean Ubuntu sees the new version through apt.
   publish:
     name: Confirm apt, then publish the Release
-    needs: [release, linux, pages-deploy]
+    needs: [version, release, linux, pages-deploy]
+    if: ${{ always() && needs.version.result == 'success' && needs.release.result != 'failure' && needs.release.result != 'cancelled' && needs.linux.result != 'failure' && needs.linux.result != 'cancelled' && needs.pages-deploy.result != 'failure' && needs.pages-deploy.result != 'cancelled' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+      RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
     steps:
       - name: Checkout the release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: refs/tags/${{ needs.release.outputs.release_tag }}
+          ref: refs/tags/${{ needs.version.outputs.release_tag }}
 
       - name: Confirm apt sees the new version on Ubuntu 24.04
+        if: ${{ inputs.targets != 'macos' }}
         run: |
           set -euo pipefail
           want="${RELEASE_TAG#v}"
@@ -701,6 +740,7 @@ jobs:
 
       # Ubuntu 26.04 changed how apt verifies signatures; report it without blocking the release.
       - name: Check apt on Ubuntu 26.04
+        if: ${{ inputs.targets != 'macos' }}
         continue-on-error: true
         run: |
           set -euo pipefail
