@@ -165,6 +165,16 @@ export function appUpdateNotification(version: string, locale: "zh-TW" | "en"): 
     : { title: `OctopusBeak ${version} downloaded`, body: "Restart to update." };
 }
 
+/** What a person runs to install an announced release (ADR 0141). */
+export const APT_UPGRADE_COMMAND = "sudo apt update && sudo apt upgrade";
+
+/** The notice for a release that apt, not the App, installs. */
+export function appUpdateAvailableNotification(version: string, locale: "zh-TW" | "en"): { title: string; body: string } {
+  return locale === "zh-TW"
+    ? { title: `新版 ${version} 可用`, body: `執行：${APT_UPGRADE_COMMAND}` }
+    : { title: `OctopusBeak ${version} is available`, body: `Run: ${APT_UPGRADE_COMMAND}` };
+}
+
 export function initialAppUpdateState(input: { support: AppUpdateSupport; enabled: boolean }): AppUpdateState {
   if (!input.support.supported) return { status: "unsupported", reason: input.support.reason };
   return input.enabled ? { status: "idle", checkedAt: null } : { status: "off" };
@@ -227,6 +237,8 @@ export type AppUpdaterDependencies = {
   onChange(state: AppUpdateState): void;
   /** Called once when an update is ready to install. */
   onReady(version: string): void;
+  /** Called once per release a notify-only App finds; a macOS App shows it in the sidebar alone. */
+  onAvailable(release: AppRelease): void;
   setInterval(callback: () => void, ms: number): unknown;
   clearInterval(timer: unknown): void;
   reportError(code: string): void;
@@ -236,6 +248,8 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
   let state = initialAppUpdateState({ support: deps.support, enabled: deps.enabled() });
   let started = false;
   let timer: unknown = null;
+  /** ADR 0141: an apt-managed App announces releases and leaves installing them to apt. */
+  const notifyOnly = deps.support.supported && deps.support.install === "notify";
 
   /** Returns the new state; an event that changes nothing publishes nothing. */
   function dispatch(event: AppUpdateEvent): AppUpdateState {
@@ -244,13 +258,11 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
     if (state === previous) return state;
     deps.onChange(state);
     if (state.status === "ready" && previous.status !== "ready") deps.onReady(state.version);
+    if (state.status === "available" && previous.status !== "available" && notifyOnly) deps.onAvailable(state.release);
     if (state.status === "failed") deps.reportError(`app-update-${state.code}`);
     if (state.status === "unsupported") deps.reportError(`app-update-${state.reason}`);
     return state;
   }
-
-  /** ADR 0141: an apt-managed App announces releases and leaves installing them to apt. */
-  const notifyOnly = deps.support.supported && deps.support.install === "notify";
 
   async function download() {
     if (notifyOnly) return;

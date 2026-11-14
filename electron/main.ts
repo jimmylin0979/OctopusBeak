@@ -27,6 +27,7 @@ import {
   type UsageFailureBook,
 } from "../src/lib/settings/usage-statistics.ts";
 import {
+  appUpdateAvailableNotification,
   appUpdateNotification,
   appUpdatesAutoDownload,
   appUpdatesEnabled,
@@ -261,6 +262,15 @@ function notifyUpdateReady(version: string) {
   if (appQuitting || !Notification.isSupported()) return;
   showNotification(
     appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
+    { route: "settings", focus: "app-updates" },
+  );
+}
+
+/** ADR 0141: an apt-managed App announces a release once and shows the apt command; apt installs it. */
+function notifyUpdateAvailable(release: { version: string }) {
+  if (appQuitting || !Notification.isSupported()) return;
+  showNotification(
+    appUpdateAvailableNotification(release.version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
     { route: "settings", focus: "app-updates" },
   );
 }
@@ -597,6 +607,7 @@ async function start() {
     hasActiveRun: () => runtime.hasActive(),
     onChange: () => broadcast("appUpdates:changed", appUpdateView()),
     onReady: notifyUpdateReady,
+    onAvailable: notifyUpdateAvailable,
     setInterval: (callback, ms) => setInterval(callback, ms).unref(),
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (code) => console.error(code),

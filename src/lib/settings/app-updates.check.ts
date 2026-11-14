@@ -6,6 +6,7 @@ import {
   APP_UPDATE_FEED_URL,
   LINUX_UPDATE_DOWNLOAD_PREFIX,
   LINUX_UPDATE_FEED_URL,
+  appUpdateAvailableNotification,
   appUpdateNotification,
   appUpdateSupport,
   createAppUpdater,
@@ -61,6 +62,7 @@ function harness(options: {
     installs: [] as string[],
     restarts: 0,
     ready: [] as string[],
+    announced: [] as string[],
     changes: [] as AppUpdateState[],
     errors: [] as string[],
     intervals: [] as { callback: () => void; ms: number }[],
@@ -88,6 +90,7 @@ function harness(options: {
     hasActiveRun: () => activeRun,
     onChange: (state) => recorded.changes.push(state),
     onReady: (version) => recorded.ready.push(version),
+    onAvailable: (target) => recorded.announced.push(target.version),
     setInterval: (callback, ms) => {
       recorded.intervals.push({ callback, ms });
       return recorded.intervals.length;
@@ -287,6 +290,33 @@ test("a notify-only App announces a newer release and never downloads or install
   assert.deepEqual(updater.state(), { status: "available", release: NEXT });
   assert.deepEqual(recorded.downloads, [], "apt installs it, so the App fetches no package");
   assert.deepEqual(recorded.installs, []);
+});
+
+test("a notify-only App announces a release once, and only a notify-only App announces", async () => {
+  const notify = harness({ support: NOTIFY });
+  notify.updater.start();
+  await settle();
+  assert.deepEqual(notify.recorded.announced, ["0.11.0"]);
+  notify.recorded.intervals[0]!.callback();
+  await settle();
+  assert.equal(notify.recorded.checks, 1, "an announced release is not checked again");
+  assert.deepEqual(notify.recorded.announced, ["0.11.0"], "one notification per release");
+
+  const squirrel = harness();
+  squirrel.updater.start();
+  await settle();
+  assert.deepEqual(squirrel.recorded.announced, [], "the sidebar alone shows an available macOS update (ADR 0083)");
+});
+
+test("the Linux notification names the version and the apt command in the person's language", () => {
+  assert.deepEqual(appUpdateAvailableNotification("0.11.0", "en"), {
+    title: "OctopusBeak 0.11.0 is available",
+    body: "Run: sudo apt update && sudo apt upgrade",
+  });
+  assert.deepEqual(appUpdateAvailableNotification("0.11.0", "zh-TW"), {
+    title: "新版 0.11.0 可用",
+    body: "執行：sudo apt update && sudo apt upgrade",
+  });
 });
 
 test("with auto-download on, a newer release downloads by itself", async () => {
