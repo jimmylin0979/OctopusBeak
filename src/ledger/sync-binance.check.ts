@@ -10,6 +10,7 @@ import {
   parseExchangeInfo,
   parseFundingAssets,
   parseTickerPrices,
+  parseTokenizedAssets,
   parseTransferPage,
   parseWithdrawals,
   signBinanceQuery,
@@ -127,6 +128,33 @@ test("each asset is priced in TWD through USDT directly, inversely or through BT
   assert.equal(binanceTwdQuotes(["BTC"], SYMBOLS, prices, null).size, 0, "without usdttwd every holding stays in its own units");
 });
 
+test("a Stocks Trading share is priced through the bStock that redeems one for one into it", () => {
+  const tokenized = parseTokenizedAssets([
+    { assetCode: "CRCLB", underlyingEquitySymbol: "CRCL", multiplier: "1", multiplierValid: true },
+    { assetCode: "TSLAB", underlyingEquitySymbol: "TSLA", multiplier: "1.00", multiplierValid: true },
+    { assetCode: "AAPLB", underlyingEquitySymbol: "AAPL", multiplier: "0.5", multiplierValid: true },
+    { assetCode: "NVDAB", underlyingEquitySymbol: "NVDA", multiplier: "1", multiplierValid: false },
+    { assetCode: "BRKBB", underlyingEquitySymbol: "BRK.B", multiplier: "1", multiplierValid: true },
+    { assetCode: "SPYB", underlyingEquitySymbol: "SPY", multiplier: "1.00077822", multiplierValid: true },
+  ]);
+  assert.deepEqual([...tokenized], [["CRCL", "CRCLB"], ["TSLA", "TSLAB"]], "only a valid one-for-one token stands in for a share");
+  const symbols = [...SYMBOLS, { symbol: "CRCLBUSDT", baseAsset: "CRCLB", quoteAsset: "USDT" }, { symbol: "AAPLBUSDT", baseAsset: "AAPLB", quoteAsset: "USDT" }];
+  const prices = new Map([["BTCUSDT", "60000.00"], ["CRCLBUSDT", "60.36"], ["AAPLBUSDT", "200"]]);
+  const quotes = binanceTwdQuotes(["EQ_CRCL", "EQ_AAPL", "EQ_MSFT", "CRCLB"], symbols, prices, "32", tokenized);
+  assert.deepEqual(quotes.get("EQ_CRCL"), {
+    price: amount("193152", 2),
+    components: [
+      { market: "binance:tokenized:CRCL=CRCLB", price: "1" },
+      { market: "CRCLBUSDT", price: "60.36" },
+      { market: "max:usdttwd", price: "32" },
+    ],
+  });
+  assert.deepEqual(quotes.get("CRCLB")?.price, amount("193152", 2), "the bStock itself keeps its own spot price");
+  assert.equal(quotes.has("EQ_AAPL"), false, "a token at another ratio does not price the share");
+  assert.equal(quotes.has("EQ_MSFT"), false, "a share without a token stays unvalued");
+  assert.equal(binanceTwdQuotes(["EQ_CRCL"], symbols, prices, "32").has("EQ_CRCL"), false, "without the token list the share stays unvalued");
+});
+
 test("history rows become typed movements only when the wallet already holds them", () => {
   assert.deepEqual(parseDeposits([
     { id: "d1", coin: "BTC", amount: "0.5", status: 1, walletType: 0, insertTime: 1_790_000_000_000 },
@@ -169,6 +197,11 @@ function binanceFake(overrides: Readonly<Record<string, (params: URLSearchParams
       { asset: "LDBTC", free: "1", locked: "0" },
     ] }),
     "/sapi/v1/asset/get-funding-asset": () => json([{ asset: "USDT", free: "100", locked: "0", freeze: "0", withdrawing: "0" }]),
+    "/sapi/v1/simple-earn/flexible/position": () => json({ total: 2, rows: [
+      { asset: "BNB", totalAmount: "1.5" },
+      { asset: "USDT", totalAmount: "10" },
+    ] }),
+    "/sapi/v1/simple-earn/locked/position": () => json({ total: 1, rows: [{ asset: "BNB", amount: "0.5" }] }),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("offset") === "0" && params.get("startTime") === String(taipei("2026-08-03"))
       ? [{ id: "d1", coin: "ETH", amount: "1", status: 1, walletType: 0, insertTime: taipei("2026-09-01") }]
       : []),
@@ -217,16 +250,46 @@ test("a collection signs private requests, bounds trades to observed pairs, and 
   assert.deepEqual(fake.calls.filter(({ path }) => path === "/api/v3/myTrades").map(({ params }) => params.get("symbol")),
     ["BTCUSDT", "ETHBTC", "ETHUSDT"], "BTC is held, ETH was deposited, USDT is only a quote");
   assert.equal(source.uid, "123456789");
-  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]]]);
+  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]], ["earn", ["BNB", "USDT"]]]);
+  assert.deepEqual(source.wallets[2]?.balances[0]?.quantity, amount("2"), "flexible and locked positions of one asset are summed");
   assert.deepEqual(source.trades.map(({ id }) => id), ["2"], "a fill before the period is not collected");
   assert.deepEqual(source.valuationQuotes.get("BTC")?.price, amount("1920000"));
   assert.deepEqual(source.valuationQuotes.get("USDT")?.price, amount("32"));
 });
 
+const withShare = (tokenized: (params: URLSearchParams) => Response) => binanceFake({
+  "/api/v3/exchangeInfo": () => Response.json({ symbols: [...SYMBOLS, { symbol: "CRCLBUSDT", baseAsset: "CRCLB", quoteAsset: "USDT" }] }),
+  "/sapi/v1/asset/get-funding-asset": () => Response.json(
+    [{ asset: "EQ_CRCL", free: "2", locked: "0", freeze: "0", withdrawing: "0" }],
+    { headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } },
+  ),
+  "/api/v3/ticker/price": () => Response.json([{ symbol: "BTCUSDT", price: "60000" }, { symbol: "CRCLBUSDT", price: "60.5" }]),
+  "/sapi/v1/equity/market/tokenized-assets": tokenized,
+});
+
+test("a held Stocks Trading share asks for the bStock list with the key alone and is valued through it", async () => {
+  const fake = withShare(() => Response.json([{ assetCode: "CRCLB", underlyingEquitySymbol: "CRCL", multiplier: "1", multiplierValid: true }]));
+  const source = await collect(fake);
+  const [call, ...again] = fake.calls.filter(({ path }) => path === "/sapi/v1/equity/market/tokenized-assets");
+  assert.equal(again.length, 0);
+  assert.equal(call?.apiKey, "test-key", "a MARKET_DATA endpoint names the caller");
+  assert.equal(call?.params.get("signature"), null, "and is not signed");
+  assert.deepEqual(source.valuationQuotes.get("EQ_CRCL")?.price, amount("1936"), "60.5 USDT x 32 TWD");
+  const plain = binanceFake();
+  await collect(plain);
+  assert.equal(plain.calls.some(({ path }) => path.startsWith("/sapi/v1/equity")), false, "no share held, no bStock list asked for");
+});
+
+test("an unreadable bStock list leaves a held share unvalued instead of failing the run", async () => {
+  const source = await collect(withShare(() => new Response(JSON.stringify({ code: -2015, msg: "Invalid API-key" }), { status: 401 })));
+  assert.equal(source.valuationQuotes.has("EQ_CRCL"), false);
+  assert.deepEqual(source.wallets[1]?.balances.map(({ asset }) => asset), ["EQ_CRCL"], "the share is still held in its own units");
+});
+
 test("a missing MAX usdttwd leaves holdings unvalued instead of failing the run", async () => {
   const source = await collect(binanceFake({ "/api/v3/ticker": () => new Response(JSON.stringify({ error: { code: 2003 } }), { status: 404 }) }));
   assert.equal(source.valuationQuotes.size, 0);
-  assert.equal(source.wallets.length, 2);
+  assert.equal(source.wallets.length, 3);
 });
 
 test("a refused key fails the collection as a credential failure", async () => {
@@ -240,7 +303,7 @@ test("a refused key fails the collection as a credential failure", async () => {
   );
 });
 
-test("non-Latin tickers Binance lists are read, and a malformed code still fails", () => {
+test("non-Latin and underscore-joined codes Binance holds are read, and a malformed code still fails", () => {
   assert.deepEqual(parseExchangeInfo({ symbols: [
     { symbol: "BTCUSDT", baseAsset: "BTC", quoteAsset: "USDT" },
     { symbol: "币安人生USDT", baseAsset: "币安人生", quoteAsset: "USDT" },
@@ -249,7 +312,10 @@ test("non-Latin tickers Binance lists are read, and a malformed code still fails
     { symbol: "币安人生USDT", baseAsset: "币安人生", quoteAsset: "USDT" },
   ]);
   assert.equal(parseTickerPrices([{ symbol: "牛来USDT", price: "0.01" }]).get("牛来USDT"), "0.01");
-  for (const code of ["btc", "BTC USDT", "BTC/USDT", ""])
+  assert.deepEqual(parseFundingAssets([{ asset: "EQ_CRCL", free: "1.5", locked: "0", freeze: "0", withdrawing: "0" }]), [
+    { asset: "EQ_CRCL", quantity: { coefficient: "15", scale: 1 } },
+  ]);
+  for (const code of ["btc", "BTC USDT", "BTC/USDT", "", "_BTC", "BTC_", "BTC__USDT", "A".repeat(21)])
     assert.throws(() => parseExchangeInfo({ symbols: [{ symbol: code, baseAsset: "BTC", quoteAsset: "USDT" }] }), /invalid asset code/u, code);
 });
 
