@@ -12,8 +12,8 @@ export const BINANCE_INVESTMENT_CONTRACT_VERSION = "binance/investment/canonical
 export const BINANCE_INVESTMENT_AUTHORITY_ROUTE = BINANCE_INVESTMENT_CONTRACT_VERSION;
 const HOLDING_EFFECTIVE_TIME_SOURCE_FIELD = "http-date";
 
-export type BinanceWallet = "spot" | "funding";
-export const BINANCE_WALLETS: readonly BinanceWallet[] = ["spot", "funding"];
+export type BinanceWallet = "spot" | "funding" | "earn";
+export const BINANCE_WALLETS: readonly BinanceWallet[] = ["spot", "funding", "earn"];
 
 /** The HTTP Date of a wallet response, the only as-of evidence Binance gives a balance. */
 export type BinanceProviderDate = Readonly<{ sourceValue: string; effectiveAt: string }>;
@@ -229,7 +229,7 @@ function captureForWallet(
   };
 }
 
-/** One capture per wallet, spot first; both wallets are required. */
+/** One capture per wallet (spot, funding, Simple Earn); every wallet is required. */
 export function buildBinanceInvestmentCaptures(input: BinanceInvestmentCaptureBuildInput): InvestmentCaptureInput[] {
   if (!input.captureId.trim()) throw new BinanceCryptoAdapterError("Binance capture ID is required.");
   return BINANCE_WALLETS.map((wallet) => {

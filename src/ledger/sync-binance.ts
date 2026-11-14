@@ -320,12 +320,39 @@ export function parseFundingAssets(body: unknown): readonly BinanceBalance[] {
 
 /**
  * Simple Earn shows its positions in the spot account as `LD` plus the asset.
- * Earn is out of scope (ADR 0084), so such a balance is not reported. A
- * listed asset that merely starts with LD, such as LDO, is kept.
+ * The Earn wallet (ADR 0142) reports them from Simple Earn itself, so the
+ * mirror is dropped to avoid counting them twice. A listed asset that merely
+ * starts with LD, such as LDO, is kept.
  */
 export function withoutEarnBalances(rows: readonly BinanceBalance[], listedAssets: ReadonlySet<string>): BinanceBalance[] {
   return rows.filter(({ asset: code }) =>
     !(code.startsWith("LD") && !listedAssets.has(code) && listedAssets.has(code.slice(2))));
+}
+
+/**
+ * ADR 0142: Simple Earn positions, flexible (`totalAmount`) and locked
+ * (`amount`), summed per asset into one Earn wallet inventory.
+ */
+export function parseEarnPositions(flexible: readonly unknown[], locked: readonly unknown[]): readonly BinanceBalance[] {
+  const totals = new Map<string, ExactAmount>();
+  const add = (rows: readonly unknown[], label: string, field: string) => {
+    for (const value of rows) {
+      const row = record(value, label);
+      const code = asset(row.asset, label);
+      totals.set(code, addExact(totals.get(code) ?? { coefficient: "0", scale: 0 }, decimal(row[field], `${code} ${field}`)));
+    }
+  };
+  add(flexible, "flexible earn position", "totalAmount");
+  add(locked, "locked earn position", "amount");
+  return [...totals].map(([code, quantity]) => ({ asset: code, quantity })).filter(({ quantity }) => quantity.coefficient !== "0");
+}
+
+/** A Simple Earn page: its rows and the total the provider says exist. */
+export function parseEarnPage(body: unknown, label: string): Readonly<{ total: number; rows: readonly unknown[] }> {
+  const page = record(body, label);
+  const total = page.total;
+  if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) throw invalid(`Binance ${label} has no total.`);
+  return { total, rows: page.rows === undefined && total === 0 ? [] : array(page.rows, `${label} rows`) };
 }
 
 const WALLET_TYPES: Readonly<Record<number, BinanceWallet>> = { 0: "spot", 1: "funding" };
@@ -665,6 +692,30 @@ async function pairTrades(client: BinanceClient, pair: BinanceSymbol, startTime:
   return [...byId.values()].filter((trade) => trade.time >= startTime);
 }
 
+const EARN_PAGE_SIZE = 100;
+
+async function earnRows(client: BinanceClient, path: string, label: string): Promise<Readonly<{ rows: unknown[]; providerDate: string | null }>> {
+  const rows: unknown[] = [];
+  let providerDate: string | null = null;
+  for (let current = 1; ; current += 1) {
+    const response = await client.signed("GET", path, { current: String(current), size: String(EARN_PAGE_SIZE) });
+    providerDate = response.providerDate;
+    const page = parseEarnPage(response.body, label);
+    rows.push(...page.rows);
+    if (page.rows.length < EARN_PAGE_SIZE || rows.length >= page.total) return { rows, providerDate };
+  }
+}
+
+async function earnWallet(client: BinanceClient): Promise<BinanceWalletSnapshot> {
+  const flexible = await earnRows(client, "/sapi/v1/simple-earn/flexible/position", "flexible earn positions");
+  const locked = await earnRows(client, "/sapi/v1/simple-earn/locked/position", "locked earn positions");
+  return {
+    wallet: "earn",
+    providerDate: parseBinanceProviderDate(locked.providerDate ?? flexible.providerDate),
+    balances: parseEarnPositions(flexible.rows, locked.rows),
+  };
+}
+
 async function maxUsdtTwd(client: BinanceClient, signal?: AbortSignal): Promise<string | null> {
   try {
     const last = record((await client.maxPublicGet("/api/v3/ticker", { market: "usdttwd" })).body, "MAX ticker").last;
@@ -717,6 +768,7 @@ export async function collectBinanceSource(
       providerDate: parseBinanceProviderDate(fundingResponse.providerDate),
       balances: parseFundingAssets(fundingResponse.body),
     },
+    await earnWallet(client),
   ];
   await options.onWalletsCollected?.(wallets.length);
 

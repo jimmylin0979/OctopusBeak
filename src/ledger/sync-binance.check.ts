@@ -197,6 +197,11 @@ function binanceFake(overrides: Readonly<Record<string, (params: URLSearchParams
       { asset: "LDBTC", free: "1", locked: "0" },
     ] }),
     "/sapi/v1/asset/get-funding-asset": () => json([{ asset: "USDT", free: "100", locked: "0", freeze: "0", withdrawing: "0" }]),
+    "/sapi/v1/simple-earn/flexible/position": () => json({ total: 2, rows: [
+      { asset: "BNB", totalAmount: "1.5" },
+      { asset: "USDT", totalAmount: "10" },
+    ] }),
+    "/sapi/v1/simple-earn/locked/position": () => json({ total: 1, rows: [{ asset: "BNB", amount: "0.5" }] }),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("offset") === "0" && params.get("startTime") === String(taipei("2026-08-03"))
       ? [{ id: "d1", coin: "ETH", amount: "1", status: 1, walletType: 0, insertTime: taipei("2026-09-01") }]
       : []),
@@ -245,7 +250,8 @@ test("a collection signs private requests, bounds trades to observed pairs, and 
   assert.deepEqual(fake.calls.filter(({ path }) => path === "/api/v3/myTrades").map(({ params }) => params.get("symbol")),
     ["BTCUSDT", "ETHBTC", "ETHUSDT"], "BTC is held, ETH was deposited, USDT is only a quote");
   assert.equal(source.uid, "123456789");
-  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]]]);
+  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]], ["earn", ["BNB", "USDT"]]]);
+  assert.deepEqual(source.wallets[2]?.balances[0]?.quantity, amount("2"), "flexible and locked positions of one asset are summed");
   assert.deepEqual(source.trades.map(({ id }) => id), ["2"], "a fill before the period is not collected");
   assert.deepEqual(source.valuationQuotes.get("BTC")?.price, amount("1920000"));
   assert.deepEqual(source.valuationQuotes.get("USDT")?.price, amount("32"));
@@ -283,7 +289,7 @@ test("an unreadable bStock list leaves a held share unvalued instead of failing 
 test("a missing MAX usdttwd leaves holdings unvalued instead of failing the run", async () => {
   const source = await collect(binanceFake({ "/api/v3/ticker": () => new Response(JSON.stringify({ error: { code: 2003 } }), { status: 404 }) }));
   assert.equal(source.valuationQuotes.size, 0);
-  assert.equal(source.wallets.length, 2);
+  assert.equal(source.wallets.length, 3);
 });
 
 test("a refused key fails the collection as a credential failure", async () => {

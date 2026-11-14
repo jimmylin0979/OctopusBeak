@@ -17,6 +17,7 @@ const SYNTHETIC_BINANCE_INPUT: BinanceInvestmentCaptureBuildInput = {
   wallets: [
     { wallet: "spot", providerDate, balances: [{ asset: "BTC", quantity: amount("15", 2) }, { asset: "SOL", quantity: amount("3") }] },
     { wallet: "funding", providerDate, balances: [{ asset: "USDT", quantity: amount("100") }] },
+    { wallet: "earn", providerDate, balances: [{ asset: "BNB", quantity: amount("2") }] },
   ],
   trades: [{
     symbol: "BTCUSDT", id: "42", baseAsset: "BTC", quoteAsset: "USDT", side: "buy",
@@ -33,13 +34,15 @@ const SYNTHETIC_BINANCE_INPUT: BinanceInvestmentCaptureBuildInput = {
   }]]),
 };
 
-test("spot and funding become two Crypto financial accounts with complete holding snapshots", () => {
-  const [spot, funding] = buildBinanceInvestmentCaptures(SYNTHETIC_BINANCE_INPUT);
+test("spot, funding and Simple Earn become three Crypto financial accounts with complete holding snapshots", () => {
+  const [spot, funding, earn] = buildBinanceInvestmentCaptures(SYNTHETIC_BINANCE_INPUT);
+  assert.equal(earn!.identity.accountKey, deriveBinanceAccountKey("123456789", "earn"));
+  assert.deepEqual(earn!.holdings.map(({ securityKey }) => securityKey), ["binance:BNB"]);
   assert.equal(spot!.identity.accountKey, deriveBinanceAccountKey("123456789", "spot"));
   assert.equal(funding!.identity.accountKey, deriveBinanceAccountKey("123456789", "funding"));
   assert.notEqual(spot!.identity.accountKey, funding!.identity.accountKey);
   assert.equal(spot!.identity.sourceConnectionKey, funding!.identity.sourceConnectionKey, "one Source connection per Binance UID");
-  for (const capture of [spot!, funding!]) {
+  for (const capture of [spot!, funding!, earn!]) {
     assert.equal(capture.identity.accountSubtype, "crypto_exchange");
     assert.deepEqual(capture.scope.holdingSnapshot, { sourceField: "http-date", value: "2026-10-31", contractVersion: "binance/investment/canonical-v1" });
     assert.equal(capture.scope.transactionHistory, undefined, "a Bounded trade history never claims a complete range");
@@ -81,6 +84,7 @@ test("trades and movements map to investment actions on the wallet that booked t
     "a deposited asset no longer held is still a captured Security");
 });
 
-test("a capture without both wallets is refused", () => {
+test("a capture without every wallet is refused", () => {
   assert.throws(() => buildBinanceInvestmentCaptures({ ...SYNTHETIC_BINANCE_INPUT, wallets: SYNTHETIC_BINANCE_INPUT.wallets.slice(0, 1) }), /funding wallet/u);
+  assert.throws(() => buildBinanceInvestmentCaptures({ ...SYNTHETIC_BINANCE_INPUT, wallets: SYNTHETIC_BINANCE_INPUT.wallets.slice(0, 2) }), /earn wallet/u);
 });
