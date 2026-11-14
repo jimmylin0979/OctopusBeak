@@ -8,7 +8,7 @@ Bring data scattered across bank accounts, brokerage accounts, and E-Invoices ba
 
 ## Download and install
 
-OctopusBeak currently supports **macOS on Apple Silicon (arm64)**. Windows, Linux, and Intel Macs are not supported yet.
+OctopusBeak ships an installer for **macOS on Apple Silicon (arm64)**. On **Ubuntu 24.04 or 26.04 (x64)** you can run it from source; see the Ubuntu steps under Developer information. There is no Ubuntu installer yet. Windows and Intel Macs are not supported yet.
 
 [Download the latest OctopusBeak release](https://github.com/WangWilly/OctopusBeak/releases/latest)
 
@@ -140,6 +140,17 @@ npm run desktop:dev
 
 The UI is Electron-only and loads the static renderer at `#/overview`.
 
+**Ubuntu 24.04 or 26.04 (x64):** before the first run, prepare the system and confirm it with `doctor`:
+
+```bash
+bash scripts/setup-ubuntu.sh   # run as yourself; it asks for sudo where it must
+mise install                   # or nvm: install the Node version in .tool-versions
+npm install
+npm run doctor                 # checks only, changes nothing, and prints a fix for each failure
+```
+
+`setup-ubuntu.sh` installs the system libraries Electron and Chromium need and `gnome-keyring`, and installs an AppArmor profile for this checkout's Electron so its sandbox runs under the user-namespace restriction Ubuntu has had since 24.04 ([ADR 0138](docs/adr/0138-electron-sandbox-on-ubuntu-through-an-apparmor-profile.md)). Sign-in details are always stored encrypted: without a working keyring the App refuses to store them. On a desktop other than GNOME or KDE, add `npm run desktop:dev -- --password-store=gnome-libsecret`. Yuanta Trade needs a security component Yuanta ships for Windows and macOS only, so it cannot be enabled on Ubuntu.
+
 The development launcher supervises its Electron process group. See [Desktop development lifecycle](docs/runbooks/desktop-development.md) for shutdown, external-volume loss, and recording cleanup.
 
 Build an unsigned local app:
@@ -166,7 +177,7 @@ npm run workflow:dev -- fixture
 
 See the [workflow development guide](docs/agents/workflow-development.md) for how to add and test a provider. Run production bank, invoice, and synchronization tasks through the desktop app's automation interface.
 
-Both development and packaged builds store financial data in `~/Library/Application Support/OctopusBeak/data/pglite/`. Set `OCTOPUSBEAK_USER_DATA` to use a different data directory.
+Both development and packaged builds store financial data in `~/Library/Application Support/OctopusBeak/data/pglite/` (`~/.config/OctopusBeak/data/pglite/` on Ubuntu). Set `OCTOPUSBEAK_USER_DATA` to use a different data directory.
 
 </details>
 

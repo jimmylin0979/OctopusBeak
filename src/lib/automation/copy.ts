@@ -132,6 +132,8 @@ const en = {
     credentialGroupsEnabled: "Enabled",
     credentialGroupsAvailable: "Available to add",
     enableCredentialGroup: (name: string) => `Enable ${name}`,
+    platformUnavailableNotice:
+      "Not available on Linux: this provider offers its required security component for Windows and macOS only.",
     credentialSyncStatuses: {
       completed: "Synced",
       partial: "Partly synced",
@@ -543,6 +545,7 @@ const zh: typeof en = {
     credentialGroupsEnabled: "已啟用",
     credentialGroupsAvailable: "可新增",
     enableCredentialGroup: (name) => `啟用${name}`,
+    platformUnavailableNotice: "Linux 無法使用：這家機構所需的安全元件只提供 Windows 與 macOS 版本。",
     credentialSyncStatuses: {
       completed: "同步成功",
       partial: "部分成功",

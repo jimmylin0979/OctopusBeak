@@ -1450,6 +1450,7 @@ import type {
                       class="rail-add"
                       aria-label={$t.automation.enableCredentialGroup(credentialGroupName(group))}
                       title={$t.automation.enableCredentialGroup(credentialGroupName(group))}
+                      disabled={group.platformUnavailable}
                       onclick={() => enableAndSelectGroup(group.id)}
                     ><Plus size={14} /></button>
                   </li>
@@ -1474,12 +1475,16 @@ import type {
                 class:dirty={group.id in sheet.changes.enabled}
                 type="button"
                 aria-pressed={groupOn}
+                disabled={group.platformUnavailable && !groupOn}
                 onclick={() => toggleGroup(group.id)}
               >
                 <span>{$t.automation.credentialSyncToggle}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
+            {#if group.platformUnavailable}
+              <p class="platform-unavailable" role="note">{$t.automation.platformUnavailableNotice}</p>
+            {/if}
 
             {#if groupOn && selectedGroupTask && (selectedGroupTask.isActive || selectedGroupTask.latestStartedAt || selectedGroupTask.latestFinishedAt)}
               {@const syncTask = selectedGroupTask}
@@ -3320,6 +3325,12 @@ import type {
 
   .source-notice span {
     color: var(--muted);
+  }
+
+  .platform-unavailable {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.875rem;
   }
 
   .credential-switch {

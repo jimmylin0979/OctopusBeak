@@ -24,6 +24,7 @@
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
     "desktop:dev": "npm run build && node scripts/desktop-dev.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "desktop:dev:update-feed-fixture": "node scripts/update-feed-fixture.mjs",
     "desktop:package": "npm run build && npm run desktop:install-browsers && electron-forge package",
     "desktop:make": "npm run build && npm run desktop:install-browsers && electron-forge make",

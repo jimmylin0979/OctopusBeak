@@ -1,6 +1,7 @@
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
 import type { WorkflowFailureDiagnostic } from "./workflow-failure-diagnostics.ts";
+import { MACOS_USAGE_HOST, type UsageHost } from "../../settings/usage-statistics.ts";
 import {
   MAX_NOTE_LENGTH,
   type ErrorReportInput,
@@ -59,7 +60,7 @@ export class InvalidErrorReport extends Error {}
 
 export function buildErrorReport(
   input: ErrorReportInput,
-  context: { appVersion: string; osVersion: string; locale: "zh-TW" | "en" },
+  context: { appVersion: string; osVersion: string; host?: UsageHost; locale: "zh-TW" | "en" },
 ): ErrorReportPayload {
   if (typeof input?.taskId !== "string" || !TASK_ID.test(input.taskId)) throw new InvalidErrorReport("unknown task");
   if (typeof input.code !== "string" || !CODES.has(input.code)) throw new InvalidErrorReport("unknown failure code");
@@ -70,11 +71,12 @@ export function buildErrorReport(
   const record = latest.get(input.taskId);
   // A record from another failure of the same task would describe the wrong error.
   const matching = record && record.errorCode === input.code ? record : null;
+  const host = context.host ?? MACOS_USAGE_HOST;
   return {
-    schema: 1,
+    ...(host.platform === "linux" ? { schema: 2 as const, platform: "linux" as const } : { schema: 1 as const }),
     appVersion: context.appVersion,
     osVersion: context.osVersion,
-    arch: "arm64",
+    arch: host.arch,
     locale: context.locale,
     source: input.taskId,
     code: input.code,
