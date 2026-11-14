@@ -1,6 +1,6 @@
 # Ubuntu updates notify only, for now
 
-Status: accepted (interim — to be replaced by an installing updater)
+Status: superseded by [ADR 0141](0141-ubuntu-releases-ship-as-a-signed-apt-repository.md)
 
 Amends [ADR 0083](0083-automatic-updates-from-github-releases.md) for Ubuntu.
 
