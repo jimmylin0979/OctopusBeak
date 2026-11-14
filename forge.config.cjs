@@ -122,6 +122,7 @@ module.exports = {
           name: "octopusbeak",
           productName: "OctopusBeak",
           bin: "OctopusBeak",
+          icon: path.join(__dirname, "electron", "assets", "icon.png"),
           genericName: "Personal finance",
           description: "Local-first personal finance for Taiwan: collect and review your own bank data.",
           categories: ["Office", "Finance"],
