@@ -141,6 +141,11 @@ export class BinanceClient {
     return this.#request("GET", API_BASE_URL, path, new URLSearchParams(params).toString(), {});
   }
 
+  /** A MARKET_DATA endpoint: the API key identifies the caller, nothing is signed. */
+  keyedGet(path: string): Promise<BinanceResponse> {
+    return this.#request("GET", API_BASE_URL, path, "", { "X-MBX-APIKEY": this.#credentials.apiKey });
+  }
+
   signed(method: "GET" | "POST", path: string, params: Readonly<Record<string, string>> = {}): Promise<BinanceResponse> {
     return this.#request(method, API_BASE_URL, path, () => signBinanceQuery({
       ...params,
@@ -206,9 +211,15 @@ function array(value: unknown, label: string): readonly unknown[] {
   return value;
 }
 
-/** Binance lists non-Latin tickers such as `币安人生`, so a code is any run of uppercase or uncased letters and digits. */
+/**
+ * Binance lists non-Latin tickers such as `币安人生` and holds codes joined by
+ * an underscore, such as `EQ_CRCL` in a funding wallet. A code is a run of
+ * uppercase or uncased letters and digits, single underscores between them.
+ */
+const ASSET_CODE = /^(?=.{1,20}$)[\p{Lu}\p{Lo}\p{Nd}]+(?:_[\p{Lu}\p{Lo}\p{Nd}]+)*$/u;
+
 function asset(value: unknown, label: string): string {
-  if (typeof value !== "string" || !/^[\p{Lu}\p{Lo}\p{Nd}]{1,20}$/u.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
+  if (typeof value !== "string" || !ASSET_CODE.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
   return value;
 }
 
@@ -259,6 +270,29 @@ export function parseExchangeInfo(body: unknown): readonly BinanceSymbol[] {
     const symbol = asset(row.symbol, "exchange symbol");
     return { symbol, baseAsset: asset(row.baseAsset, `${symbol} base`), quoteAsset: asset(row.quoteAsset, `${symbol} quote`) };
   });
+}
+
+/** Binance Stocks Trading holds a US share as `EQ_` plus its ticker, such as `EQ_CRCL`. */
+export const BINANCE_EQUITY_PREFIX = "EQ_";
+
+/**
+ * ADR 0141: each US ticker whose bStock token stands one for one for a share,
+ * as `CRCL` to `CRCLB`. A row with any other multiplier is left out, so its
+ * share stays unvalued rather than priced at a ratio nobody has checked.
+ */
+export function parseTokenizedAssets(body: unknown): ReadonlyMap<string, string> {
+  const tokens = new Map<string, string>();
+  for (const value of array(body, "tokenized assets")) {
+    const row = record(value, "tokenized asset");
+    const token = asset(row.assetCode, "tokenized asset");
+    const underlying = row.underlyingEquitySymbol;
+    // A ticker such as `BRK.B` cannot follow `EQ_` in an asset code, so no held share can name it.
+    if (typeof underlying !== "string" || !ASSET_CODE.test(underlying)) continue;
+    if (row.multiplierValid !== true || typeof row.multiplier !== "string") continue;
+    const multiplier = decimal(row.multiplier, `${token} multiplier`);
+    if (multiplier.coefficient === "1" && multiplier.scale === 0) tokens.set(underlying, token);
+  }
+  return tokens;
 }
 
 function balances(rows: readonly unknown[], label: string, parts: readonly string[]): BinanceBalance[] {
@@ -467,16 +501,35 @@ const USDT_ROUTES: readonly ((asset: string, book: PriceBook) => UsdtPrice | nul
   },
 ];
 
+function usdtPrice(code: string, book: PriceBook): UsdtPrice | null {
+  return USDT_ROUTES.reduce<UsdtPrice | null>((found, route) => found ?? route(code, book), null);
+}
+
+/**
+ * A Stocks Trading share (ADR 0141) has no spot market of its own; it takes
+ * the USDT price of the bStock that redeems one for one into it, and the
+ * substitution is kept as a component of the quote.
+ */
+function equityUsdtPrice(code: string, book: PriceBook, tokenized: ReadonlyMap<string, string>): UsdtPrice | null {
+  if (!code.startsWith(BINANCE_EQUITY_PREFIX)) return null;
+  const underlying = code.slice(BINANCE_EQUITY_PREFIX.length);
+  const token = tokenized.get(underlying);
+  const price = token === undefined ? null : usdtPrice(token, book);
+  return price && { price: price.price, components: [{ market: `binance:tokenized:${underlying}=${token}`, price: "1" }, ...price.components] };
+}
+
 /**
  * Each asset's TWD price: its USDT price from Binance times MAX's public
  * `usdttwd`. Without `usdttwd`, or without a USDT route, the asset gets no
- * quote and its holding stays unvalued in its own units.
+ * quote and its holding stays unvalued in its own units. A Stocks Trading
+ * share is priced through its one-for-one bStock in `tokenized`.
  */
 export function binanceTwdQuotes(
   assets: Iterable<string>,
   symbols: readonly BinanceSymbol[],
   prices: ReadonlyMap<string, string>,
   usdtTwd: string | null,
+  tokenized: ReadonlyMap<string, string> = new Map(),
 ): ReadonlyMap<string, BinanceTwdQuote> {
   const quotes = new Map<string, BinanceTwdQuote>();
   if (usdtTwd === null) return quotes;
@@ -486,7 +539,7 @@ export function binanceTwdQuotes(
   };
   const usdtTwdComponent = { market: "max:usdttwd", price: usdtTwd };
   for (const code of assets) {
-    const usdt = USDT_ROUTES.reduce<UsdtPrice | null>((found, route) => found ?? route(code, book), null);
+    const usdt = usdtPrice(code, book) ?? equityUsdtPrice(code, book, tokenized);
     if (usdt) quotes.set(code, {
       price: multiplyExact(usdt.price, decimal(usdtTwd, "MAX usdttwd")),
       components: [...usdt.components, usdtTwdComponent],
@@ -623,6 +676,22 @@ async function maxUsdtTwd(client: BinanceClient, signal?: AbortSignal): Promise<
   }
 }
 
+/**
+ * The bStock for each US ticker, read only when a wallet holds a Stocks
+ * Trading share. A failure leaves those shares unvalued, as a missing
+ * `usdttwd` does, instead of failing the run.
+ */
+async function tokenizedAssets(client: BinanceClient, held: ReadonlySet<string>, signal?: AbortSignal): Promise<ReadonlyMap<string, string>> {
+  if (![...held].some((code) => code.startsWith(BINANCE_EQUITY_PREFIX))) return new Map();
+  try {
+    return parseTokenizedAssets((await client.keyedGet("/sapi/v1/equity/market/tokenized-assets")).body);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof BinanceSourceError) return new Map();
+    throw error;
+  }
+}
+
 /** Collect every Binance value of one run in memory before anything is committed. */
 export async function collectBinanceSource(
   credentials: BinanceCredentials,
@@ -682,11 +751,13 @@ export async function collectBinanceSource(
   for (const pair of pairs) trades.push(...await pairTrades(client, pair, tradeWindow!.startTime));
 
   const prices = parseTickerPrices((await client.publicGet("/api/v3/ticker/price")).body);
+  const held = new Set(wallets.flatMap(({ balances: rows }) => rows.map(({ asset: code }) => code)));
   const valuationQuotes = binanceTwdQuotes(
-    new Set(wallets.flatMap(({ balances: rows }) => rows.map(({ asset: code }) => code))),
+    held,
     symbols,
     prices,
     await maxUsdtTwd(client, options.signal),
+    await tokenizedAssets(client, held, options.signal),
   );
   const uniqueTrades = unique(trades, ({ symbol, id }) => `${symbol}:${id}`);
   const uniqueTransfers = unique(transfers, ({ tranId }) => tranId);
