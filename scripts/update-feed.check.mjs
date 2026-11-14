@@ -5,8 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { APP_UPDATE_DOWNLOAD_PREFIX, parseAppUpdateFeed } from "../src/lib/settings/app-updates.ts";
-import { UPDATE_FEED_FILE, updateFeed, writeUpdateFeed } from "./update-feed.mjs";
+import {
+  APP_UPDATE_DOWNLOAD_PREFIX,
+  LINUX_UPDATE_DOWNLOAD_PREFIX,
+  LINUX_UPDATE_FEED_URL,
+  parseAppUpdateFeed,
+} from "../src/lib/settings/app-updates.ts";
+import { LINUX_UPDATE_FEED_FILE, UPDATE_FEED_FILE, updateFeed, writeUpdateFeed } from "./update-feed.mjs";
 
 const PUBLISHED = new Date("2026-10-31T04:00:00Z");
 const SHA = "b".repeat(64);
@@ -68,6 +73,31 @@ test("the feed is written from the built ZIP, and the App accepts what it writes
       size: zip.length,
       sha256: written.sha256,
     });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the Ubuntu feed names the release's .deb, is the file the Ubuntu App reads, and the App accepts it", () => {
+  assert.ok(LINUX_UPDATE_FEED_URL.endsWith(`/releases/latest/download/${LINUX_UPDATE_FEED_FILE}`));
+  const directory = mkdtempSync(join(tmpdir(), "update-feed-linux-"));
+  try {
+    assert.throws(
+      () => writeUpdateFeed({ makeDirectory: directory, version: "0.11.0", publishedAt: PUBLISHED, target: "linux-x64" }),
+      /Expected exactly one octopusbeak_0\.11\.0_amd64\.deb/,
+    );
+    const deb = Buffer.from("!<arch>\n the new release");
+    writeFileSync(join(directory, "octopusbeak_0.11.0_amd64.deb"), deb);
+    const path = writeUpdateFeed({ makeDirectory: directory, version: "0.11.0", publishedAt: PUBLISHED, target: "linux-x64" });
+    assert.equal(path, join(directory, LINUX_UPDATE_FEED_FILE));
+    const written = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(
+      written.url,
+      "https://github.com/jimmylin0979/OctopusBeak/releases/download/v0.11.0/octopusbeak_0.11.0_amd64.deb",
+    );
+    assert.equal(written.sha256, createHash("sha256").update(deb).digest("hex"));
+    assert.equal(parseAppUpdateFeed(written, LINUX_UPDATE_DOWNLOAD_PREFIX).version, "0.11.0");
+    assert.throws(() => parseAppUpdateFeed(written, APP_UPDATE_DOWNLOAD_PREFIX), /bad url/, "the macOS App refuses it");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

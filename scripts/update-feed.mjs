@@ -5,24 +5,39 @@ import { fileURLToPath } from "node:url";
 
 /** The installed App reads releases/latest/download/<this> (src/lib/settings/app-updates.ts). */
 export const UPDATE_FEED_FILE = "update-feed-darwin-arm64.json";
-const RELEASES = "https://github.com/WangWilly/OctopusBeak/releases/download";
+/** The Ubuntu App reads this one and only announces it; apt installs the .deb (ADR 0141). */
+export const LINUX_UPDATE_FEED_FILE = "update-feed-linux-x64.json";
+
+/** Each target's release asset, the feed that names it, and the repository that serves both. */
+const TARGETS = {
+  "darwin-arm64": {
+    feedFile: UPDATE_FEED_FILE,
+    releases: "https://github.com/WangWilly/OctopusBeak/releases/download",
+    assetName: (version) => `OctopusBeak-darwin-arm64-${version}.zip`,
+  },
+  "linux-x64": {
+    feedFile: LINUX_UPDATE_FEED_FILE,
+    releases: "https://github.com/jimmylin0979/OctopusBeak/releases/download",
+    assetName: (version) => `octopusbeak_${version}_amd64.deb`,
+  },
+};
 
 export function updateZipName(version) {
-  return `OctopusBeak-darwin-arm64-${version}.zip`;
+  return TARGETS["darwin-arm64"].assetName(version);
 }
 
 /**
  * The App's own feed (ADR 0083), parsed by parseAppUpdateFeed. Squirrel.Mac never reads it: the App
  * downloads and checks the ZIP itself, then hands it to Squirrel.Mac only to install.
  */
-export function updateFeed({ version, publishedAt, size, sha256 }) {
+export function updateFeed({ version, publishedAt, size, sha256, target = "darwin-arm64" }) {
   if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`Not a release version: ${version}`);
   return {
     schema: 1,
     version,
     name: `OctopusBeak ${version}`,
     pubDate: publishedAt.toISOString(),
-    url: `${RELEASES}/v${version}/${updateZipName(version)}`,
+    url: `${TARGETS[target].releases}/v${version}/${TARGETS[target].assetName(version)}`,
     size,
     sha256,
   };
@@ -50,19 +65,21 @@ function filesUnder(directory) {
 }
 
 /** Writes the feed into the make directory, refusing when the ZIP it names was not built. */
-export function writeUpdateFeed({ makeDirectory, version, publishedAt }) {
-  const zips = filesUnder(makeDirectory).filter((path) => basename(path) === updateZipName(version));
+export function writeUpdateFeed({ makeDirectory, version, publishedAt, target = "darwin-arm64" }) {
+  const { assetName, feedFile } = TARGETS[target];
+  const zips = filesUnder(makeDirectory).filter((path) => basename(path) === assetName(version));
   if (zips.length !== 1) {
-    throw new Error(`Expected exactly one ${updateZipName(version)} in ${makeDirectory}, found ${zips.length}.`);
+    throw new Error(`Expected exactly one ${assetName(version)} in ${makeDirectory}, found ${zips.length}.`);
   }
-  const feed = updateFeed({ version, publishedAt, ...zipDigest(zips[0]) });
-  const path = join(makeDirectory, UPDATE_FEED_FILE);
+  const feed = updateFeed({ version, publishedAt, target, ...zipDigest(zips[0]) });
+  const path = join(makeDirectory, feedFile);
   writeFileSync(path, `${JSON.stringify(feed, null, 2)}\n`);
   return path;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const makeDirectory = resolve(process.argv[2] ?? "out/make");
+  const target = process.argv[3] ?? "darwin-arm64";
   const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  console.log(writeUpdateFeed({ makeDirectory, version, publishedAt: new Date() }));
+  console.log(writeUpdateFeed({ makeDirectory, version, publishedAt: new Date(), target }));
 }
