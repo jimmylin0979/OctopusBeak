@@ -8,7 +8,7 @@
 
 ## 下載與安裝
 
-目前只提供 **macOS Apple Silicon（arm64）** 安裝版。**Ubuntu 24.04 / 26.04（x64）** 可以從原始碼執行，請見下方「開發者資訊」裡的 Ubuntu 說明；Ubuntu 安裝版尚未提供。Windows 與 Intel Mac 尚未支援。
+提供 **macOS Apple Silicon（arm64）** 與 **Ubuntu 24.04 / 26.04（x64）** 安裝版。Windows 與 Intel Mac 尚未支援。Ubuntu 也可以從原始碼執行，請見下方「開發者資訊」。
 
 [下載最新版 OctopusBeak](https://github.com/WangWilly/OctopusBeak/releases/latest)
 
@@ -17,6 +17,19 @@
 3. 從「應用程式」啟動 OctopusBeak。
 
 建議使用 DMG 安裝。也提供 ZIP，並附上 `SHA256SUMS.txt` 供你核對檔案。
+
+### Ubuntu 24.04 / 26.04（x64）
+
+1. 從最新版本頁面下載 `octopusbeak_<版本>_amd64.deb`，可用 `SHA256SUMS-linux.txt` 核對。
+2. 安裝（`apt` 會一併安裝所需的系統函式庫）：
+
+   ```bash
+   sudo apt install ./octopusbeak_<版本>_amd64.deb
+   ```
+
+3. 從應用程式選單或指令 `octopusbeak` 啟動。
+
+安裝時會把 OctopusBeak 的 apt 來源與簽章金鑰一起裝好，之後的更新用 `sudo apt update && sudo apt upgrade` 即可，App 發現新版時會顯示這行指令，但不會自己下載或安裝（[ADR 0141](docs/adr/0141-ubuntu-releases-ship-as-a-signed-apt-repository.md)）。`sudo apt purge octopusbeak` 會連同 apt 來源與金鑰一起移除。
 
 ## 你可以用它做什麼
 

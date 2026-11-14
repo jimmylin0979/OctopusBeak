@@ -1,6 +1,6 @@
 # Ubuntu releases ship as a signed apt repository
 
-Status: accepted
+Status: accepted (implemented; the first real release has not run yet)
 
 Supersedes [ADR 0139](0139-ubuntu-updates-notify-only-for-now.md). Builds on [ADR 0138](0138-electron-sandbox-on-ubuntu-through-an-apparmor-profile.md), [ADR 0083](0083-automatic-updates-from-github-releases.md), and [ADR 0003](0003-manual-immutable-electron-releases.md).
 

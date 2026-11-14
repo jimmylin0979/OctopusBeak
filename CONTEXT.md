@@ -911,6 +911,14 @@ _Avoid_: macOS user, all personal-finance users
 An operating system, release line, and CPU architecture on which the App is built, verified, and expected to run every Supported source except those it marks as Platform-unavailable: macOS on Apple Silicon, and Ubuntu 24.04 LTS or 26.04 LTS on x64.
 _Avoid_: OS, target, environment
 
+**Apt repository**:
+The signed apt repository on GitHub Pages that serves the Ubuntu `.deb`. An Ubuntu App is updated only by `apt upgrade` from it; the App announces a new version and never downloads or installs it (ADR 0141)
+_Avoid_: PPA, update server, auto-installer
+
+**Signing subkey**:
+A subkey of the offline primary release key that CI uses to sign the Apt repository. The keyring in the `.deb` carries an active and a standby one, so a leaked subkey can be replaced without asking users to reinstall a keyring
+_Avoid_: release key, GPG key
+
 **Platform-unavailable source**:
 A Supported source that cannot run on a given Supported platform because the Institution offers no External prerequisite for that platform; the App shows it there but does not let the person enable it. Yuanta Trade is Platform-unavailable on Ubuntu.
 _Avoid_: Unsupported source, disabled source, broken source
