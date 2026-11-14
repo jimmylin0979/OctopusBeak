@@ -4,6 +4,8 @@ import {
   APP_UPDATE_CHECK_INTERVAL_MS,
   APP_UPDATE_DOWNLOAD_PREFIX,
   APP_UPDATE_FEED_URL,
+  LINUX_UPDATE_DOWNLOAD_PREFIX,
+  LINUX_UPDATE_FEED_URL,
   appUpdateNotification,
   appUpdateSupport,
   createAppUpdater,
@@ -265,6 +267,26 @@ test("with auto-download off, a newer release waits at available until the perso
   assert.deepEqual(recorded.ready, ["0.11.0"]);
   updater.receive({ type: "update-downloaded" });
   assert.deepEqual(recorded.ready, ["0.11.0"], "one notification per update");
+});
+
+const NOTIFY: AppUpdateSupport = {
+  supported: true,
+  feedUrl: LINUX_UPDATE_FEED_URL,
+  downloadPrefix: LINUX_UPDATE_DOWNLOAD_PREFIX,
+  install: "notify",
+};
+
+test("a notify-only App announces a newer release and never downloads or installs it", async () => {
+  const { updater, recorded } = harness({ support: NOTIFY, autoDownload: true });
+  updater.start();
+  await settle();
+  assert.deepEqual(updater.state(), { status: "available", release: NEXT }, "auto-download does not apply");
+  await updater.download();
+  updater.applySettings({ enabled: true, autoDownload: true });
+  await settle();
+  assert.deepEqual(updater.state(), { status: "available", release: NEXT });
+  assert.deepEqual(recorded.downloads, [], "apt installs it, so the App fetches no package");
+  assert.deepEqual(recorded.installs, []);
 });
 
 test("with auto-download on, a newer release downloads by itself", async () => {

@@ -249,7 +249,11 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
     return state;
   }
 
+  /** ADR 0141: an apt-managed App announces releases and leaves installing them to apt. */
+  const notifyOnly = deps.support.supported && deps.support.install === "notify";
+
   async function download() {
+    if (notifyOnly) return;
     const previous = state;
     const downloading = dispatch({ type: "download" });
     if (downloading === previous || downloading.status !== "downloading") return;
