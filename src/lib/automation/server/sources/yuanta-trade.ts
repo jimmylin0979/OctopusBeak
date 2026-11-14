@@ -54,6 +54,8 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   id: "yuanta-trade",
   label: "Yuanta Trade",
   enabledKey: "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED",
+  // Yuanta ships its ServiSign security component for Windows and macOS only.
+  unavailablePlatforms: ["linux"],
   displayName: localized(
     "Yuanta Securities",
     "元大證券（Yuanta Securities）",

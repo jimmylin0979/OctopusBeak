@@ -4,7 +4,12 @@ import {
   APP_UPDATE_CHECK_INTERVAL_MS,
   APP_UPDATE_DOWNLOAD_PREFIX,
   APP_UPDATE_FEED_URL,
+  LINUX_UPDATE_DOWNLOAD_PREFIX,
+  LINUX_UPDATE_FEED_URL,
+  appUpdateAvailableNotification,
   appUpdateNotification,
+  appUpdateOffer,
+  APT_UPGRADE_COMMAND,
   appUpdateSupport,
   createAppUpdater,
   isNewerVersion,
@@ -24,7 +29,7 @@ const SUPPORTED: AppUpdateSupport = {
   supported: true,
   feedUrl: APP_UPDATE_FEED_URL,
   downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX,
-  squirrel: true,
+  install: "squirrel",
 };
 
 function release(version: string): AppRelease {
@@ -59,6 +64,7 @@ function harness(options: {
     installs: [] as string[],
     restarts: 0,
     ready: [] as string[],
+    announced: [] as string[],
     changes: [] as AppUpdateState[],
     errors: [] as string[],
     intervals: [] as { callback: () => void; ms: number }[],
@@ -86,6 +92,7 @@ function harness(options: {
     hasActiveRun: () => activeRun,
     onChange: (state) => recorded.changes.push(state),
     onReady: (version) => recorded.ready.push(version),
+    onAvailable: (target) => recorded.announced.push(target.version),
     setInterval: (callback, ms) => {
       recorded.intervals.push({ callback, ms });
       return recorded.intervals.length;
@@ -142,24 +149,24 @@ test("only a strictly newer x.y.z counts as newer", () => {
 test("packaged builds read only the GitHub feed and ignore the development fixture", () => {
   const fixture = "http://127.0.0.1:4555/update-feed-darwin-arm64.json";
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: true, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: true, feedFixtureUrl: fixture, platform: "darwin" }),
     SUPPORTED,
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: fixture, platform: "darwin" }),
     { supported: false, reason: "not-in-applications" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: true, inApplicationsFolder: true, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: true, inApplicationsFolder: true, feedFixtureUrl: fixture, platform: "darwin" }),
     { supported: false, reason: "development-build" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: undefined }),
+    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: undefined, platform: "darwin" }),
     { supported: false, reason: "development-build" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: fixture }),
-    { supported: true, feedUrl: fixture, downloadPrefix: "http://127.0.0.1:4555/", squirrel: false },
+    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: fixture, platform: "darwin" }),
+    { supported: true, feedUrl: fixture, downloadPrefix: "http://127.0.0.1:4555/", install: "fixture" },
   );
   assert.deepEqual(
     appUpdateSupport({
@@ -167,9 +174,34 @@ test("packaged builds read only the GitHub feed and ignore the development fixtu
       testFixture: false,
       inApplicationsFolder: false,
       feedFixtureUrl: "https://example.com/update-feed-darwin-arm64.json",
+      platform: "darwin",
     }),
     { supported: false, reason: "development-build" },
     "the fixture feed must be on 127.0.0.1",
+  );
+});
+
+test("a packaged Linux App checks the Linux feed on this repository and only notifies", () => {
+  const linux = { packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: undefined } as const;
+  assert.deepEqual(appUpdateSupport({ ...linux, platform: "linux" }), {
+    supported: true,
+    feedUrl: "https://github.com/jimmylin0979/OctopusBeak/releases/latest/download/update-feed-linux-x64.json",
+    downloadPrefix: "https://github.com/jimmylin0979/OctopusBeak/releases/download/",
+    install: "notify",
+  });
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", feedFixtureUrl: "http://127.0.0.1:4555/update-feed-linux-x64.json" }),
+    appUpdateSupport({ ...linux, platform: "linux" }),
+    "a packaged build ignores the development fixture",
+  );
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", testFixture: true }),
+    { supported: false, reason: "development-build" },
+  );
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", packaged: false }),
+    { supported: false, reason: "development-build" },
+    "a source checkout never checks",
   );
 });
 
@@ -240,6 +272,53 @@ test("with auto-download off, a newer release waits at available until the perso
   assert.deepEqual(recorded.ready, ["0.11.0"]);
   updater.receive({ type: "update-downloaded" });
   assert.deepEqual(recorded.ready, ["0.11.0"], "one notification per update");
+});
+
+const NOTIFY: AppUpdateSupport = {
+  supported: true,
+  feedUrl: LINUX_UPDATE_FEED_URL,
+  downloadPrefix: LINUX_UPDATE_DOWNLOAD_PREFIX,
+  install: "notify",
+};
+
+test("a notify-only App announces a newer release and never downloads or installs it", async () => {
+  const { updater, recorded } = harness({ support: NOTIFY, autoDownload: true });
+  updater.start();
+  await settle();
+  assert.deepEqual(updater.state(), { status: "available", release: NEXT }, "auto-download does not apply");
+  await updater.download();
+  updater.applySettings({ enabled: true, autoDownload: true });
+  await settle();
+  assert.deepEqual(updater.state(), { status: "available", release: NEXT });
+  assert.deepEqual(recorded.downloads, [], "apt installs it, so the App fetches no package");
+  assert.deepEqual(recorded.installs, []);
+});
+
+test("a notify-only App announces a release once, and only a notify-only App announces", async () => {
+  const notify = harness({ support: NOTIFY });
+  notify.updater.start();
+  await settle();
+  assert.deepEqual(notify.recorded.announced, ["0.11.0"]);
+  notify.recorded.intervals[0]!.callback();
+  await settle();
+  assert.equal(notify.recorded.checks, 1, "an announced release is not checked again");
+  assert.deepEqual(notify.recorded.announced, ["0.11.0"], "one notification per release");
+
+  const squirrel = harness();
+  squirrel.updater.start();
+  await settle();
+  assert.deepEqual(squirrel.recorded.announced, [], "the sidebar alone shows an available macOS update (ADR 0083)");
+});
+
+test("the Linux notification names the version and the apt command in the person's language", () => {
+  assert.deepEqual(appUpdateAvailableNotification("0.11.0", "en"), {
+    title: "OctopusBeak 0.11.0 is available",
+    body: "Run: sudo apt update && sudo apt upgrade",
+  });
+  assert.deepEqual(appUpdateAvailableNotification("0.11.0", "zh-TW"), {
+    title: "新版 0.11.0 可用",
+    body: "執行：sudo apt update && sudo apt upgrade",
+  });
 });
 
 test("with auto-download on, a newer release downloads by itself", async () => {
@@ -380,6 +459,7 @@ test("a hand-off that throws becomes a failed install", async () => {
     hasActiveRun: () => false,
     onChange: () => {},
     onReady: () => {},
+    onAvailable: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
     reportError: (code) => errors.push(code),
@@ -451,4 +531,36 @@ test("the reducer's outcome for every state and event", () => {
 test("the ready notification names the version in the person's language", () => {
   assert.deepEqual(appUpdateNotification("0.11.0", "zh-TW"), { title: "新版 0.11.0 已下載", body: "重新啟動即可更新。" });
   assert.deepEqual(appUpdateNotification("0.11.0", "en"), { title: "OctopusBeak 0.11.0 downloaded", body: "Restart to update." });
+});
+
+test("the sidebar offers a download on macOS and the apt command on Ubuntu, and nothing otherwise", () => {
+  const available: AppUpdateState = { status: "available", release: NEXT };
+  assert.deepEqual(appUpdateOffer({ currentVersion: "0.10.0", state: available, install: "squirrel" }), {
+    kind: "download",
+    version: "0.11.0",
+  });
+  assert.deepEqual(appUpdateOffer({ currentVersion: "0.10.0", state: available, install: "notify" }), {
+    kind: "apt",
+    version: "0.11.0",
+    command: APT_UPGRADE_COMMAND,
+  });
+  for (const state of [
+    { status: "idle", checkedAt: null },
+    { status: "checking" },
+    { status: "off" },
+  ] as const) {
+    assert.equal(appUpdateOffer({ currentVersion: "0.10.0", state, install: "notify" }), null, state.status);
+  }
+  assert.equal(
+    appUpdateOffer({ currentVersion: "0.10.0", state: { status: "failed", code: "check-failed" }, install: "notify" }),
+    null,
+  );
+  assert.deepEqual(
+    appUpdateOffer({
+      currentVersion: "0.10.0",
+      state: { status: "failed", code: "download-failed", release: NEXT },
+      install: "squirrel",
+    }),
+    { kind: "retry", version: "0.11.0" },
+  );
 });

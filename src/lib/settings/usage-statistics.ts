@@ -32,6 +32,7 @@ export const USAGE_PING_FIELDS = [
   "schema",
   "appVersion",
   "osVersion",
+  "platform",
   "arch",
   "locale",
   "cohortWeek",
@@ -54,11 +55,28 @@ export const USAGE_FAILURE_DAYS = 7;
 const MAX_FAILURE_ENTRIES = 50;
 const MAX_FAILURE_COUNT = 1000;
 
+/**
+ * ADR 0140: the Supported platform a ping or Error report names. A macOS App
+ * sends the schema it always has, with no platform field; a Linux App sends the
+ * next schema, which adds `platform`.
+ */
+export type UsageHost =
+  | Readonly<{ platform: "darwin"; arch: "arm64" }>
+  | Readonly<{ platform: "linux"; arch: "arm64" | "x64" }>;
+
+export const MACOS_USAGE_HOST: UsageHost = { platform: "darwin", arch: "arm64" };
+
+export function usageHost(platform: string, arch: string): UsageHost {
+  return platform === "linux" ? { platform: "linux", arch: arch === "arm64" ? "arm64" : "x64" } : MACOS_USAGE_HOST;
+}
+
 export type UsagePing = {
-  schema: 2;
+  schema: 2 | 3;
   appVersion: string;
   osVersion: string;
-  arch: "arm64";
+  /** Schema 3 only. */
+  platform?: "linux";
+  arch: "arm64" | "x64";
   locale: "zh-TW" | "en";
   cohortWeek: string;
   firstThisWeek: boolean;
@@ -85,7 +103,7 @@ export function usageCohortWeek(firstLaunch: Date, now: Date): string {
   return week > current ? current : week;
 }
 
-/** macOS major.minor only; patch versions are dropped. */
+/** The operating system's major.minor only (macOS 15.5, Ubuntu 24.04); patch versions are dropped. */
 export function usageOsVersion(systemVersion: string): string {
   const [major = "0", minor = "0"] = systemVersion.split(".");
   return `${major}.${minor}`;
@@ -95,6 +113,7 @@ export function buildUsagePing(input: {
   now: Date;
   appVersion: string;
   systemVersion: string;
+  host?: UsageHost;
   locale: "zh-TW" | "en";
   cohortWeek: string;
   lastSentDay: string | null;
@@ -102,11 +121,12 @@ export function buildUsagePing(input: {
 }): UsagePing {
   const today = taipeiDate(input.now);
   const last = input.lastSentDay;
+  const host = input.host ?? MACOS_USAGE_HOST;
   return {
-    schema: 2,
+    ...(host.platform === "linux" ? { schema: 3 as const, platform: "linux" as const } : { schema: 2 as const }),
     appVersion: input.appVersion,
     osVersion: usageOsVersion(input.systemVersion),
-    arch: "arm64",
+    arch: host.arch,
     locale: input.locale,
     cohortWeek: input.cohortWeek,
     firstThisWeek: last === null || isoWeek(last) !== isoWeek(today),
@@ -187,6 +207,8 @@ export type UsagePingerDependencies = {
   writeSettings(patch: Record<string, string>): void;
   appVersion(): string;
   systemVersion(): string;
+  /** Defaults to macOS on Apple Silicon. */
+  host?(): UsageHost;
   locale(): "zh-TW" | "en";
   /** When the app's data directory was created, used once to fix the cohort week. */
   firstLaunch(): Date;
@@ -222,6 +244,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
       now: deps.now(),
       appVersion: deps.appVersion(),
       systemVersion: deps.systemVersion(),
+      ...(deps.host ? { host: deps.host() } : {}),
       locale: deps.locale(),
       cohortWeek: cohortWeek(settings),
       lastSentDay: typeof lastSentDay === "string" && lastSentDay ? lastSentDay : null,

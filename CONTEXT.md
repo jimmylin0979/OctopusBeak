@@ -192,11 +192,11 @@ A sanitized description of a Preview Source's responses, listing endpoints, stat
 _Avoid_: Crash report, telemetry, raw response upload
 
 **Usage statistics**:
-The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, whether it is the install's first ping of the week and month, and the past week's failure counts by task, Failure code and stage, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier, nothing from the ledger or sign-in details, and no run detail beyond those counts. Besides an Error report the person sends by hand, it is the only data the App itself sends to OctopusBeak.
+The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, the Supported platform with its operating-system major and minor version and CPU architecture, the system language (Chinese or English), first-launch week, whether it is the install's first ping of the week and month, and the past week's failure counts by task, Failure code and stage, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier, nothing from the ledger or sign-in details, and no run detail beyond those counts. Besides an Error report the person sends by hand, it is the only data the App itself sends to OctopusBeak.
 _Avoid_: Telemetry, analytics, tracking, crash report
 
 **Error report**:
-One failure the person chooses to send from a failed run's details (ADR 0081): the task, Failure code and stage, the app and macOS versions, the host's sanitized failure record when it matches, and an optional note with long digit runs masked and an optional email. Nothing is sent until the person selects Send; the receiver keeps it one year. It is distinct from a Preview structure report, which the person pastes into a public issue themselves.
+One failure the person chooses to send from a failed run's details (ADR 0081): the task, Failure code and stage, the app version, the Supported platform and its operating-system version, the host's sanitized failure record when it matches, and an optional note with long digit runs masked and an optional email. Nothing is sent until the person selects Send; the receiver keeps it one year. It is distinct from a Preview structure report, which the person pastes into a public issue themselves.
 _Avoid_: Crash report, automatic error upload, telemetry
 
 **Financial account type**:
@@ -906,6 +906,22 @@ _Avoid_: Model web browsing, authenticated browser handoff
 **Core user**:
 A person in Taiwan who manages at least three bank, credit-card, or investment accounts and is tired of consolidating them manually in spreadsheets. This is the initial audience, not a permanent limit on who OctopusBeak may serve.
 _Avoid_: macOS user, all personal-finance users
+
+**Supported platform**:
+An operating system, release line, and CPU architecture on which the App is built, verified, and expected to run every Supported source except those it marks as Platform-unavailable: macOS on Apple Silicon, and Ubuntu 24.04 LTS or 26.04 LTS on x64.
+_Avoid_: OS, target, environment
+
+**Apt repository**:
+The signed apt repository on GitHub Pages that serves the Ubuntu `.deb`. An Ubuntu App is updated only by `apt upgrade` from it; the App announces a new version and never downloads or installs it (ADR 0141)
+_Avoid_: PPA, update server, auto-installer
+
+**Signing subkey**:
+A subkey of the offline primary release key that CI uses to sign the Apt repository. The keyring in the `.deb` carries an active and a standby one, so a leaked subkey can be replaced without asking users to reinstall a keyring
+_Avoid_: release key, GPG key
+
+**Platform-unavailable source**:
+A Supported source that cannot run on a given Supported platform because the Institution offers no External prerequisite for that platform; the App shows it there but does not let the person enable it. Yuanta Trade is Platform-unavailable on Ubuntu.
+_Avoid_: Unsupported source, disabled source, broken source
 
 **Supported source**:
 A collection and import integration whose declared Institution and product coverage has been verified for the current Beta. A planned, previously working, or merely registered integration is not a supported source.

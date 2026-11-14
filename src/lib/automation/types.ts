@@ -141,6 +141,17 @@ export type SessionTakeover = Readonly<{
   prompt?: TakeoverPrompt;
 }>;
 
+/** The `process.platform` of a Supported platform. */
+export type AutomationPlatform = "darwin" | "linux";
+
+/** True when the source cannot run on this platform because its Institution offers no External prerequisite for it. */
+export function platformUnavailable(
+  group: Readonly<{ unavailablePlatforms?: readonly AutomationPlatform[] }>,
+  platform: string,
+): boolean {
+  return group.unavailablePlatforms?.some((entry) => entry === platform) ?? false;
+}
+
 /** What every Supported source, verified or preview, declares about its sign-in. */
 export type SupportedSource = Readonly<{
   id: string;
@@ -160,6 +171,8 @@ export type AutomationCredentialGroup = {
   credentialKeys: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
+  /** Supported platforms on which this source is Platform-unavailable: shown, but never enabled or run. */
+  unavailablePlatforms?: readonly AutomationPlatform[];
   /** The disclosure alone: the prompt may hold a predicate and never crosses IPC. */
   sessionTakeover?: Pick<SessionTakeover, "notice">;
   preview?: true;

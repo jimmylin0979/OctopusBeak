@@ -24,6 +24,13 @@ jobs:
         with:
           lfs: true
 
+      # Pages serves only what a deploy uploads, so every deploy carries the apt repository of the newest
+      # release (ADR 0141); without it a site-only change would take the repository offline.
+      - name: Add the apt repository from the newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/stage-apt-site.sh site
+
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 

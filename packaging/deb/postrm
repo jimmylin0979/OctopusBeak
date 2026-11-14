@@ -1,0 +1,22 @@
+#!/bin/sh
+# Remove drops the sandbox profile with the binary it names; purge also drops the apt source and keyring.
+set -e
+
+case "$1" in
+  remove|purge)
+    if [ -f /etc/apparmor.d/octopusbeak ]; then
+      if command -v apparmor_parser > /dev/null 2>&1; then
+        apparmor_parser --remove /etc/apparmor.d/octopusbeak || true
+      fi
+      rm -f /etc/apparmor.d/octopusbeak
+    fi
+    ;;
+esac
+
+case "$1" in
+  purge)
+    rm -f /etc/apt/sources.list.d/octopusbeak.sources /usr/share/keyrings/octopusbeak-archive-keyring.gpg
+    ;;
+esac
+
+exit 0

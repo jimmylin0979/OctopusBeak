@@ -57,7 +57,7 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /appUpdateSupport\(\{\s*packaged: app\.isPackaged,\s*testFixture: cdpFixture \|\| packagedBrowserFixture,\s*inApplicationsFolder: app\.isPackaged && app\.isInApplicationsFolder\(\),\s*feedFixtureUrl: process\.env\.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,\s*\}\)/,
+  /appUpdateSupport\(\{\s*packaged: app\.isPackaged,\s*testFixture: cdpFixture \|\| packagedBrowserFixture,\s*inApplicationsFolder: app\.isPackaged && process\.platform === "darwin" && app\.isInApplicationsFolder\(\),\s*feedFixtureUrl: process\.env\.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,\s*platform: process\.platform,\s*\}\)/,
   "fixtures never check, and a packaged build outside Applications never downloads (app-updates.check.ts covers the decision)",
 );
 // squirrel-update-handoff.check.ts covers the hand-off itself.

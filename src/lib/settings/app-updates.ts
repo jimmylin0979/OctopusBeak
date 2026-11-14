@@ -9,6 +9,12 @@ export const APP_UPDATE_FEED_URL =
 /** A feed may only point at a release asset of this repository. */
 export const APP_UPDATE_DOWNLOAD_PREFIX = "https://github.com/WangWilly/OctopusBeak/releases/download/";
 
+/** ADR 0141: the repository that publishes the Ubuntu feed, the .deb, and the apt repository. */
+export const LINUX_RELEASE_REPOSITORY = "jimmylin0979/OctopusBeak";
+export const LINUX_UPDATE_FEED_URL =
+  `https://github.com/${LINUX_RELEASE_REPOSITORY}/releases/latest/download/update-feed-linux-x64.json`;
+export const LINUX_UPDATE_DOWNLOAD_PREFIX = `https://github.com/${LINUX_RELEASE_REPOSITORY}/releases/download/`;
+
 export const APP_UPDATES_ENABLED_KEY = "APP_UPDATES_ENABLED";
 export const APP_UPDATES_AUTO_DOWNLOAD_KEY = "APP_UPDATES_AUTO_DOWNLOAD";
 
@@ -63,6 +69,8 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   return false;
 }
 
+export type AppUpdateInstall = "squirrel" | "fixture" | "notify";
+
 export type AppUpdateUnsupportedReason = "development-build" | "not-in-applications";
 
 /** Where checks go, or why this launch never checks. */
@@ -71,8 +79,11 @@ export type AppUpdateSupport =
     supported: true;
     feedUrl: string;
     downloadPrefix: string;
-    /** False only for the development feed fixture, which stops before Squirrel.Mac. */
-    squirrel: boolean;
+    /**
+     * "squirrel" downloads and hands the ZIP to Squirrel.Mac; "fixture" stops before Squirrel.Mac (the
+     * development feed); "notify" only announces the release, because apt installs it (ADR 0141).
+     */
+    install: AppUpdateInstall;
   }
   | { supported: false; reason: AppUpdateUnsupportedReason };
 
@@ -87,17 +98,22 @@ export function appUpdateSupport(input: {
   testFixture: boolean;
   inApplicationsFolder: boolean;
   feedFixtureUrl: string | undefined;
+  platform: NodeJS.Platform;
 }): AppUpdateSupport {
   if (!input.packaged) {
     const fixture = input.feedFixtureUrl && FIXTURE_FEED.exec(input.feedFixtureUrl);
     return fixture
-      ? { supported: true, feedUrl: input.feedFixtureUrl!, downloadPrefix: fixture[0], squirrel: false }
+      ? { supported: true, feedUrl: input.feedFixtureUrl!, downloadPrefix: fixture[0], install: "fixture" }
       : { supported: false, reason: "development-build" };
   }
   if (input.testFixture) return { supported: false, reason: "development-build" };
+  // An apt-managed App installs nothing itself, so where it sits on disk does not matter.
+  if (input.platform === "linux") {
+    return { supported: true, feedUrl: LINUX_UPDATE_FEED_URL, downloadPrefix: LINUX_UPDATE_DOWNLOAD_PREFIX, install: "notify" };
+  }
   // Squirrel.Mac cannot replace an app it cannot write; this saves a 430 MB download that would not install.
   if (!input.inApplicationsFolder) return { supported: false, reason: "not-in-applications" };
-  return { supported: true, feedUrl: APP_UPDATE_FEED_URL, downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX, squirrel: true };
+  return { supported: true, feedUrl: APP_UPDATE_FEED_URL, downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX, install: "squirrel" };
 }
 
 export type AppUpdateFailureCode = "download-failed" | "verify-failed" | "install-failed";
@@ -139,7 +155,29 @@ export type AppUpdaterSignal =
   | { type: "update-downloaded" }
   | { type: "error"; message: string };
 
-export type AppUpdateView = { currentVersion: string; state: AppUpdateState };
+export type AppUpdateView = {
+  currentVersion: string;
+  state: AppUpdateState;
+  /** "notify" is an apt-managed Ubuntu App: it announces releases and never downloads one. */
+  install: AppUpdateInstall;
+};
+
+/** What the sidebar offers for an update: a download, another try, or the apt command to run. */
+export type AppUpdateOffer =
+  | { kind: "download"; version: string }
+  | { kind: "retry"; version: string }
+  | { kind: "apt"; version: string; command: string };
+
+export function appUpdateOffer(view: AppUpdateView): AppUpdateOffer | null {
+  const { state } = view;
+  if (state.status === "available") {
+    return view.install === "notify"
+      ? { kind: "apt", version: state.release.version, command: APT_UPGRADE_COMMAND }
+      : { kind: "download", version: state.release.version };
+  }
+  if (state.status === "failed" && state.code !== "check-failed") return { kind: "retry", version: state.release.version };
+  return null;
+}
 
 export type AppUpdateRestartResult =
   | { ok: true }
@@ -149,6 +187,16 @@ export function appUpdateNotification(version: string, locale: "zh-TW" | "en"): 
   return locale === "zh-TW"
     ? { title: `新版 ${version} 已下載`, body: "重新啟動即可更新。" }
     : { title: `OctopusBeak ${version} downloaded`, body: "Restart to update." };
+}
+
+/** What a person runs to install an announced release (ADR 0141). */
+export const APT_UPGRADE_COMMAND = "sudo apt update && sudo apt upgrade";
+
+/** The notice for a release that apt, not the App, installs. */
+export function appUpdateAvailableNotification(version: string, locale: "zh-TW" | "en"): { title: string; body: string } {
+  return locale === "zh-TW"
+    ? { title: `新版 ${version} 可用`, body: `執行：${APT_UPGRADE_COMMAND}` }
+    : { title: `OctopusBeak ${version} is available`, body: `Run: ${APT_UPGRADE_COMMAND}` };
 }
 
 export function initialAppUpdateState(input: { support: AppUpdateSupport; enabled: boolean }): AppUpdateState {
@@ -213,6 +261,8 @@ export type AppUpdaterDependencies = {
   onChange(state: AppUpdateState): void;
   /** Called once when an update is ready to install. */
   onReady(version: string): void;
+  /** Called once per release a notify-only App finds; a macOS App shows it in the sidebar alone. */
+  onAvailable(release: AppRelease): void;
   setInterval(callback: () => void, ms: number): unknown;
   clearInterval(timer: unknown): void;
   reportError(code: string): void;
@@ -222,6 +272,8 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
   let state = initialAppUpdateState({ support: deps.support, enabled: deps.enabled() });
   let started = false;
   let timer: unknown = null;
+  /** ADR 0141: an apt-managed App announces releases and leaves installing them to apt. */
+  const notifyOnly = deps.support.supported && deps.support.install === "notify";
 
   /** Returns the new state; an event that changes nothing publishes nothing. */
   function dispatch(event: AppUpdateEvent): AppUpdateState {
@@ -230,12 +282,14 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
     if (state === previous) return state;
     deps.onChange(state);
     if (state.status === "ready" && previous.status !== "ready") deps.onReady(state.version);
+    if (state.status === "available" && previous.status !== "available" && notifyOnly) deps.onAvailable(state.release);
     if (state.status === "failed") deps.reportError(`app-update-${state.code}`);
     if (state.status === "unsupported") deps.reportError(`app-update-${state.reason}`);
     return state;
   }
 
   async function download() {
+    if (notifyOnly) return;
     const previous = state;
     const downloading = dispatch({ type: "download" });
     if (downloading === previous || downloading.status !== "downloading") return;

@@ -6,10 +6,12 @@ import type { WorkflowFailureDiagnostic } from "./server/workflow-failure-diagno
  * message or a value), plus a note and an email the person typed. Nothing is sent without a click.
  */
 export type ErrorReportPayload = {
-  schema: 1;
+  /** 2 adds `platform` and is sent only by a Linux App (ADR 0140). */
+  schema: 1 | 2;
   appVersion: string;
   osVersion: string;
-  arch: "arm64";
+  platform?: "linux";
+  arch: "arm64" | "x64";
   locale: "zh-TW" | "en";
   source: string;
   code: string;

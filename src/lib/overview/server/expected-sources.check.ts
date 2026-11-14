@@ -4,6 +4,11 @@ import {
 } from "../../automation/server/tasks.ts";
 import { configuredOverviewSources } from "./expected-sources.ts";
 
+// Yuanta Trade is Platform-unavailable on Linux (CONTEXT.md); this
+// check covers its macOS behavior, so it runs as macOS on any host. Node gives each
+// check file its own process, so the stub stays in this file.
+Object.defineProperty(process, "platform", { value: "darwin" });
+
 const disabledSettings = Object.fromEntries(
   AUTOMATION_CREDENTIAL_GROUPS.map((group) => [group.enabledKey, false]),
 );

@@ -199,7 +199,9 @@
       case "checking":
         return dictionary.settings.appUpdatesChecking;
       case "available":
-        return dictionary.settings.appUpdatesAvailable(state.release.version);
+        return $updateView?.install === "notify"
+          ? dictionary.settings.appUpdatesAvailableApt(state.release.version)
+          : dictionary.settings.appUpdatesAvailable(state.release.version);
       case "downloading":
         return dictionary.settings.appUpdatesDownloading(
           state.release.version,
@@ -790,6 +792,7 @@
               </button>
             </div>
           </div>
+          {#if $updateView?.install !== "notify"}
           <div class="setting-row">
             <div class="setting-label-group">
               <span class="setting-label" id="app-updates-auto-download-label">{$t.settings.appUpdatesAutoDownloadToggle}</span>
@@ -810,6 +813,7 @@
               </button>
             </div>
           </div>
+          {/if}
         </div>
       </section>
 
