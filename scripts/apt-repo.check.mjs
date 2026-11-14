@@ -31,13 +31,13 @@ function fixtureDeb(directory, version) {
 }
 
 /** Throwaway key: an offline primary that certifies a signing subkey, as ADR 0141 describes. */
-function throwawayKey(home) {
+function throwawayKey(home, passphrase = "") {
   const env = { ...process.env, GNUPGHOME: home };
-  run("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "OctopusBeak Test <test@example.invalid>", "ed25519", "cert", "never"], { env });
+  run("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase, "--quick-generate-key", "OctopusBeak Test <test@example.invalid>", "ed25519", "cert", "never"], { env });
   const fingerprint = run("gpg", ["--batch", "--with-colons", "--list-keys"], { env })
     .split("\n").find((line) => line.startsWith("fpr:"))?.split(":")[9];
   assert.ok(fingerprint);
-  run("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-add-key", fingerprint, "ed25519", "sign", "never"], { env });
+  run("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase, "--quick-add-key", fingerprint, "ed25519", "sign", "never"], { env });
   const subkey = run("gpg", ["--batch", "--with-colons", "--list-keys"], { env })
     .split("\n").filter((line) => line.startsWith("fpr:"))[1]?.split(":")[9];
   assert.ok(subkey);
@@ -141,6 +141,30 @@ test("apt refuses a repository signed by a key the keyring does not hold", { ski
     assert.match(result.stdout + result.stderr, /NO_PUBKEY|not signed|signature|invalid/iu);
   } finally {
     for (const name of ["trusted", "rogue"]) spawnSync("gpgconf", ["--homedir", join(root, name), "--kill", "all"]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a passphrase-protected subkey signs when the passphrase is given, and the build fails without it", { skip: !available }, () => {
+  const root = mkdtempSync("/tmp/ob-apt-");
+  try {
+    const home = join(root, "gnupg");
+    mkdirSync(home, { mode: 0o700 });
+    const { subkey, keyring } = throwawayKey(home, "correct horse");
+    const build = (passphrase) => buildAptRepository({
+      debs: [fixtureDeb(root, "1.0.0")],
+      outDir: join(root, "repo"),
+      gnupgHome: home,
+      signingKey: subkey,
+      passphrase,
+    });
+    assert.throws(() => build(""), /gpg failed/);
+    assert.throws(() => build("wrong"), /gpg failed/);
+    build("correct horse");
+    const updated = apt(join(root, "apt"), join(root, "repo"), keyring).update();
+    assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+  } finally {
+    spawnSync("gpgconf", ["--homedir", join(root, "gnupg"), "--kill", "all"]);
     rmSync(root, { recursive: true, force: true });
   }
 });

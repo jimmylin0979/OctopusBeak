@@ -24,9 +24,10 @@ function digests(path) {
 /**
  * Builds the signed apt tree for the given .deb files under outDir: the pool, the Packages index, and a
  * Release signed both as InRelease and as Release.gpg. gnupgHome and signingKey name the signing subkey
- * (ADR 0141); a trailing "!" is added so gpg uses exactly that subkey.
+ * (ADR 0141); a trailing "!" is added so gpg uses exactly that subkey. The passphrase goes to gpg on a
+ * pipe, never on the command line, where another process could read it.
  */
-export function buildAptRepository({ debs, outDir, gnupgHome, signingKey, date = new Date() }) {
+export function buildAptRepository({ debs, outDir, gnupgHome, signingKey, passphrase = "", date = new Date() }) {
   const pool = join(outDir, "pool", COMPONENT, PACKAGE[0], PACKAGE);
   mkdirSync(pool, { recursive: true });
   for (const deb of debs) copyFileSync(deb, join(pool, basename(deb)));
@@ -59,9 +60,9 @@ export function buildAptRepository({ debs, outDir, gnupgHome, signingKey, date =
 
   const sign = (mode, output) =>
     run("gpg", [
-      "--homedir", gnupgHome, "--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase", "",
+      "--homedir", gnupgHome, "--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-fd", "0",
       "--local-user", `${signingKey}!`, mode, "--output", join(dists, output), join(dists, "Release"),
-    ]);
+    ], { input: `${passphrase}\n` });
   sign("--clearsign", "InRelease");
   sign("--detach-sign", "Release.gpg");
 }
