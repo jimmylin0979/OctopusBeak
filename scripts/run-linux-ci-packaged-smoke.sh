@@ -9,4 +9,5 @@ ci_keyring_password="$(openssl rand -hex 32)"
 printf '%s' "$ci_keyring_password" | gnome-keyring-daemon --unlock --components=secrets
 unset ci_keyring_password
 
-node scripts/desktop-packaged-browser-smoke.mjs --app-root "${1:?usage: run-linux-ci-packaged-smoke.sh <app-root>}"
+OCTOPUSBEAK_SMOKE_APP_ARGS="--disable-gpu" OCTOPUSBEAK_SMOKE_SHOW_APP_STDERR=1 \
+  node scripts/desktop-packaged-browser-smoke.mjs --app-root "${1:?usage: run-linux-ci-packaged-smoke.sh <app-root>}"

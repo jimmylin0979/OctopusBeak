@@ -160,7 +160,9 @@ function runPackagedPlaywrightNode(runnerPath, environment, timeoutMs = 30_000) 
 
 function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_000) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(electronPath, [], {
+    // CI on a runner without a GPU adds flags such as --disable-gpu here; a person's App never sees them.
+    const extraArguments = (process.env.OCTOPUSBEAK_SMOKE_APP_ARGS ?? "").split(" ").filter(Boolean);
+    const child = spawn(electronPath, extraArguments, {
       cwd: dirname(electronPath),
       env: {
         ...inheritedEnvironment(),
@@ -192,7 +194,12 @@ function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_0
       pendingLine = `${pendingLine}${chunk}`.split("\n").at(-1) ?? "";
       if (pendingLine.length > 4096) pendingLine = "";
     });
-    child.stderr.setEncoding("utf8").on("data", () => {});
+    // Discarded so no App output reaches the log, unless CI asks to see why the App died.
+    let stderrTail = "";
+    const showStderr = process.env.OCTOPUSBEAK_SMOKE_SHOW_APP_STDERR === "1";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      if (showStderr) stderrTail = `${stderrTail}${chunk}`.slice(-4000);
+    });
     child.once("error", (error) => {
       clearTimeout(timeout);
       clearTimeout(killTimer);
@@ -207,7 +214,7 @@ function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_0
         return;
       }
       if (code !== 0) {
-        reject(new Error(`Packaged App worker fixture exited with status ${code ?? signal ?? "unknown"}.`));
+        reject(new Error(`Packaged App worker fixture exited with status ${code ?? signal ?? "unknown"}.${stderrTail ? `\n${stderrTail}` : ""}`));
         return;
       }
       if (duplicateResult || typeof resultLine !== "string") {
