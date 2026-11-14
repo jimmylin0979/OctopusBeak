@@ -130,3 +130,23 @@ test("Forge flips the fuses that let the packaged binary run as Node or under a 
     "file:// localStorage stays readable so preferences can move to app://",
   );
 });
+
+test("Forge ships only the Linux x64 CPU ONNX runtime in the Ubuntu package", { skip: process.platform !== "linux" }, () => {
+  const root = "/node_modules/onnxruntime-node/bin/napi-v6";
+  for (const unused of [
+    `${root}/darwin/arm64/libonnxruntime.1.24.3.dylib`,
+    `${root}/win32/x64/onnxruntime.dll`,
+    `${root}/linux/arm64/libonnxruntime.so.1`,
+    `${root}/linux/x64/libonnxruntime_providers_cuda.so`,
+    `${root}/linux/x64/libonnxruntime_providers_tensorrt.so`,
+  ]) {
+    assert.equal(isIgnored(unused), true, `${unused} must not enter the Ubuntu package`);
+  }
+  for (const needed of [
+    `${root}/linux/x64/onnxruntime_binding.node`,
+    `${root}/linux/x64/libonnxruntime.so.1`,
+    `${root}/linux/x64/libonnxruntime_providers_shared.so`,
+  ]) {
+    assert.equal(isIgnored(needed), false, `${needed} is the CPU runtime`);
+  }
+});

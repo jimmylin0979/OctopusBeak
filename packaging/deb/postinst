@@ -1,0 +1,20 @@
+#!/bin/sh
+# ADR 0141: make this machine apt-managed and keep Electron's sandbox (ADR 0138).
+set -e
+resources=/usr/lib/octopusbeak/resources
+
+case "$1" in
+  configure)
+    install -D -m 0644 "$resources/octopusbeak-archive-keyring.gpg" /usr/share/keyrings/octopusbeak-archive-keyring.gpg
+    install -D -m 0644 "$resources/octopusbeak.sources" /etc/apt/sources.list.d/octopusbeak.sources
+    if [ -d /etc/apparmor.d ]; then
+      install -D -m 0644 "$resources/octopusbeak.apparmor" /etc/apparmor.d/octopusbeak
+      # A container or chroot has no AppArmor to load into; the profile still sits ready.
+      if command -v apparmor_parser > /dev/null 2>&1; then
+        apparmor_parser --replace /etc/apparmor.d/octopusbeak || true
+      fi
+    fi
+    ;;
+esac
+
+exit 0
