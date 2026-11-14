@@ -4,7 +4,7 @@
 //   node scripts/deb-install-check.mjs key <workdir>            make a throwaway signing key and keyring
 //   node scripts/deb-install-check.mjs verify <workdir> <deb>   install, upgrade and purge <deb>
 //
-// `key` runs before the build so the .deb is built with OCTOPUSBEAK_APT_KEYRING=<workdir>/keyring.gpg.
+// `key` runs before the build so the .deb is built with OCTOPUSBEAK_APT_KEYRING=<workdir>/octopusbeak-archive-keyring.gpg.
 // `verify` then signs a local apt repository with that key, so the keyring the .deb installed is the one
 // apt checks.
 import { spawnSync } from "node:child_process";
@@ -37,9 +37,9 @@ function makeKey(workdir) {
   const fingerprint = gpg("--list-keys", "--with-colons").split("\n").find((line) => line.startsWith("fpr:")).split(":")[9];
   gpg("--quick-add-key", fingerprint, "ed25519", "sign", "1y");
   const subkey = gpg("--list-keys", "--with-colons", "--with-subkey-fingerprints").split("\n").filter((line) => line.startsWith("fpr:")).map((line) => line.split(":")[9]).at(-1);
-  writeFileSync(join(workdir, "keyring.gpg"), run("gpg", ["--homedir", gnupgHome, "--export", fingerprint], { encoding: "buffer" }));
+  writeFileSync(join(workdir, "octopusbeak-archive-keyring.gpg"), run("gpg", ["--homedir", gnupgHome, "--export", fingerprint], { encoding: "buffer" }));
   writeFileSync(join(workdir, "subkey"), subkey);
-  console.log(`keyring ${join(workdir, "keyring.gpg")} subkey ${subkey}`);
+  console.log(`keyring ${join(workdir, "octopusbeak-archive-keyring.gpg")} subkey ${subkey}`);
 }
 
 /** The same package one version later: only the Version field differs, so the upgrade path is the real one. */

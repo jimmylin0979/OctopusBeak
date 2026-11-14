@@ -76,6 +76,10 @@ module.exports = {
       if (linuxPackage && !existsSync(debKeyring)) {
         throw new Error(`No apt keyring at ${debKeyring}; export the signing public key there or set OCTOPUSBEAK_APT_KEYRING.`);
       }
+      // extraResource copies a file under its own name, and postinst looks for exactly this one.
+      if (linuxPackage && path.basename(debKeyring) !== "octopusbeak-archive-keyring.gpg") {
+        throw new Error(`The apt keyring must be named octopusbeak-archive-keyring.gpg, not ${path.basename(debKeyring)}.`);
+      }
     },
   },
   plugins: [

@@ -224,7 +224,7 @@ jobs:
 
       - name: Build the .deb
         env:
-          OCTOPUSBEAK_APT_KEYRING: ${{ runner.temp }}/deb-check/keyring.gpg
+          OCTOPUSBEAK_APT_KEYRING: ${{ runner.temp }}/deb-check/octopusbeak-archive-keyring.gpg
         run: npm run desktop:make
 
       - name: Install, upgrade and purge the .deb
