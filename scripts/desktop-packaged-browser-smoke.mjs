@@ -158,6 +158,14 @@ function runPackagedPlaywrightNode(runnerPath, environment, timeoutMs = 30_000) 
   });
 }
 
+/** CI names the display and session-bus variables the App needs; a person's run passes none of them. */
+function ciDisplayEnvironment() {
+  return Object.fromEntries(
+    (process.env.OCTOPUSBEAK_SMOKE_APP_ENV ?? "").split(" ").filter((name) => name && typeof process.env[name] === "string")
+      .map((name) => [name, process.env[name]]),
+  );
+}
+
 function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_000) {
   return new Promise((resolvePromise, reject) => {
     // CI on a runner without a GPU adds flags such as --disable-gpu here; a person's App never sees them.
@@ -166,6 +174,7 @@ function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_0
       cwd: dirname(electronPath),
       env: {
         ...inheritedEnvironment(),
+        ...ciDisplayEnvironment(),
         ...environment,
       },
       stdio: ["ignore", "pipe", "pipe"],
