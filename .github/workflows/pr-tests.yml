@@ -217,7 +217,7 @@ jobs:
           exit 1
 
       - name: Install packaging tools
-        run: sudo apt-get install --yes dpkg-dev fakeroot
+        run: sudo apt-get install --yes dpkg-dev fakeroot xvfb dbus-x11 gnome-keyring libsecret-1-0
 
       - name: Make a throwaway signing key
         run: node scripts/deb-install-check.mjs key "$RUNNER_TEMP/deb-check"

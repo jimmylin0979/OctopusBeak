@@ -2,7 +2,7 @@
 // install, upgrade and purge), so run it on a disposable runner, never a workstation.
 //
 //   node scripts/deb-install-check.mjs key <workdir>            make a throwaway signing key and keyring
-//   node scripts/deb-install-check.mjs verify <workdir> <deb>   install, upgrade and purge <deb>
+//   node scripts/deb-install-check.mjs verify <workdir> <deb>   install, start, upgrade and purge <deb>
 //
 // `key` runs before the build so the .deb is built with OCTOPUSBEAK_APT_KEYRING=<workdir>/octopusbeak-archive-keyring.gpg.
 // `verify` then signs a local apt repository with that key, so the keyring the .deb installed is the one
@@ -76,6 +76,12 @@ function verify(workdir, debArgument) {
   assert.ok(existsSync(PROFILE), "postinst installs the AppArmor profile");
   const loaded = spawnSync("sudo", ["grep", "-q", "octopusbeak", "/sys/kernel/security/apparmor/profiles"]);
   assert.equal(loaded.status, 0, "the AppArmor profile is loaded into the kernel");
+
+  // The installed App must start with Electron's sandbox on (setuid chrome-sandbox, AppArmor profile) and run
+  // its packaged browser worker. Starting the files in out/ would not prove the installed layout works.
+  run("dbus-run-session", ["--", "xvfb-run", "--auto-servernum", "bash", "scripts/run-linux-ci-packaged-smoke.sh", `${INSTALL_DIRECTORY}/resources/app`], {
+    cwd: resolve(import.meta.dirname, ".."),
+  });
 
   // 2. Upgrade through apt from a signed repository holding the later version. Only the test source is
   // read, so the real Pages URL (not yet live) does not matter; it is verified against the keyring the .deb
