@@ -39,6 +39,8 @@ function binanceFetch(
       ? json({ uid: 123456789, balances: [{ asset: "BTC", free: "0.2", locked: "0" }, { asset: "ETH", free: "1", locked: "0" }] })
       : json({ code: -2015, msg: "Invalid API-key, IP, or permissions for action." }, accountStatus),
     "/sapi/v1/asset/get-funding-asset": () => json(funding),
+    "/sapi/v1/simple-earn/flexible/position": () => json({ total: 0, rows: [] }),
+    "/sapi/v1/simple-earn/locked/position": () => json({ total: 0, rows: [] }),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("startTime") === String(Date.parse("2026-08-03T00:00:00+08:00"))
       ? [{ id: "d1", coin: "USDT", amount: "100", status: 1, walletType: 1, insertTime: taipei("2026-09-01") }]
       : []),
@@ -92,14 +94,14 @@ test("Binance workflow commits both wallets and their bounded history through th
     const result = await executor.run("sync-binance", "synthetic-binance-run", input, new AbortController().signal) as {
       counts: Record<string, number>;
     };
-    assert.deepEqual(result.counts, { canonicalCaptureCount: 2, accountCount: 2, statementRowCount: 4 });
+    assert.deepEqual(result.counts, { canonicalCaptureCount: 3, accountCount: 3, statementRowCount: 4 });
     assert.deepEqual((await store.query<{ account_subtype: string }>(
       "SELECT account_subtype FROM investment_accounts WHERE source_id = 'binance' ORDER BY account_subtype",
-    )).rows.map(({ account_subtype }) => account_subtype), ["crypto_exchange", "crypto_exchange"]);
+    )).rows.map(({ account_subtype }) => account_subtype), ["crypto_exchange", "crypto_exchange", "crypto_exchange"]);
     assert.equal(await count(
       "SELECT COUNT(*)::int AS count FROM capture_scopes scope JOIN source_captures capture ON capture.capture_id = scope.capture_id WHERE capture.record_kind = 'investment-source-record' AND scope.scope_kind = 'point-in-time'",
-    ), 2, "neither capture claims a complete history range");
-    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_snapshots"), 2);
+    ), 3, "no capture claims a complete history range");
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_snapshots"), 3);
     assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE is_current = 1"), 3);
     assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE valuation_currency = 'TWD'"), 2,
       "BTC and USDT have a USDT route; ETH has none and stays unvalued");
@@ -124,11 +126,13 @@ test("Binance workflow commits both wallets and their bounded history through th
       ? overview.projection.accounts.filter((account) => account.integrationNamespace === "binance")
       : [];
     const emptied = binance.filter((account) => account.positions.length === 0);
-    assert.equal(emptied.length, 1, "the funding wallet holds nothing after the emptied snapshot");
-    assert.equal(emptied[0]!.availability, "available", "an empty complete snapshot is an observed zero, not awaiting");
-    assert.deepEqual(emptied[0]!.amounts.map(({ currency, exact }) => ({ currency, exact })), [
-      { currency: "TWD", exact: { coefficient: "0", scale: 0 } },
-    ]);
+    assert.equal(emptied.length, 2, "the funding wallet holds nothing after the emptied snapshot, and the Earn wallet never held anything");
+    for (const account of emptied) {
+      assert.equal(account.availability, "available", "an empty complete snapshot is an observed zero, not awaiting");
+      assert.deepEqual(account.amounts.map(({ currency, exact }) => ({ currency, exact })), [
+        { currency: "TWD", exact: { coefficient: "0", scale: 0 } },
+      ]);
+    }
 
     globalThis.fetch = binanceFetch(401);
     await assert.rejects(
