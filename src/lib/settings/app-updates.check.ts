@@ -8,6 +8,8 @@ import {
   LINUX_UPDATE_FEED_URL,
   appUpdateAvailableNotification,
   appUpdateNotification,
+  appUpdateOffer,
+  APT_UPGRADE_COMMAND,
   appUpdateSupport,
   createAppUpdater,
   isNewerVersion,
@@ -529,4 +531,36 @@ test("the reducer's outcome for every state and event", () => {
 test("the ready notification names the version in the person's language", () => {
   assert.deepEqual(appUpdateNotification("0.11.0", "zh-TW"), { title: "新版 0.11.0 已下載", body: "重新啟動即可更新。" });
   assert.deepEqual(appUpdateNotification("0.11.0", "en"), { title: "OctopusBeak 0.11.0 downloaded", body: "Restart to update." });
+});
+
+test("the sidebar offers a download on macOS and the apt command on Ubuntu, and nothing otherwise", () => {
+  const available: AppUpdateState = { status: "available", release: NEXT };
+  assert.deepEqual(appUpdateOffer({ currentVersion: "0.10.0", state: available, install: "squirrel" }), {
+    kind: "download",
+    version: "0.11.0",
+  });
+  assert.deepEqual(appUpdateOffer({ currentVersion: "0.10.0", state: available, install: "notify" }), {
+    kind: "apt",
+    version: "0.11.0",
+    command: APT_UPGRADE_COMMAND,
+  });
+  for (const state of [
+    { status: "idle", checkedAt: null },
+    { status: "checking" },
+    { status: "off" },
+  ] as const) {
+    assert.equal(appUpdateOffer({ currentVersion: "0.10.0", state, install: "notify" }), null, state.status);
+  }
+  assert.equal(
+    appUpdateOffer({ currentVersion: "0.10.0", state: { status: "failed", code: "check-failed" }, install: "notify" }),
+    null,
+  );
+  assert.deepEqual(
+    appUpdateOffer({
+      currentVersion: "0.10.0",
+      state: { status: "failed", code: "download-failed", release: NEXT },
+      install: "squirrel",
+    }),
+    { kind: "retry", version: "0.11.0" },
+  );
 });

@@ -69,6 +69,8 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   return false;
 }
 
+export type AppUpdateInstall = "squirrel" | "fixture" | "notify";
+
 export type AppUpdateUnsupportedReason = "development-build" | "not-in-applications";
 
 /** Where checks go, or why this launch never checks. */
@@ -81,7 +83,7 @@ export type AppUpdateSupport =
      * "squirrel" downloads and hands the ZIP to Squirrel.Mac; "fixture" stops before Squirrel.Mac (the
      * development feed); "notify" only announces the release, because apt installs it (ADR 0141).
      */
-    install: "squirrel" | "fixture" | "notify";
+    install: AppUpdateInstall;
   }
   | { supported: false; reason: AppUpdateUnsupportedReason };
 
@@ -153,7 +155,29 @@ export type AppUpdaterSignal =
   | { type: "update-downloaded" }
   | { type: "error"; message: string };
 
-export type AppUpdateView = { currentVersion: string; state: AppUpdateState };
+export type AppUpdateView = {
+  currentVersion: string;
+  state: AppUpdateState;
+  /** "notify" is an apt-managed Ubuntu App: it announces releases and never downloads one. */
+  install: AppUpdateInstall;
+};
+
+/** What the sidebar offers for an update: a download, another try, or the apt command to run. */
+export type AppUpdateOffer =
+  | { kind: "download"; version: string }
+  | { kind: "retry"; version: string }
+  | { kind: "apt"; version: string; command: string };
+
+export function appUpdateOffer(view: AppUpdateView): AppUpdateOffer | null {
+  const { state } = view;
+  if (state.status === "available") {
+    return view.install === "notify"
+      ? { kind: "apt", version: state.release.version, command: APT_UPGRADE_COMMAND }
+      : { kind: "download", version: state.release.version };
+  }
+  if (state.status === "failed" && state.code !== "check-failed") return { kind: "retry", version: state.release.version };
+  return null;
+}
 
 export type AppUpdateRestartResult =
   | { ok: true }

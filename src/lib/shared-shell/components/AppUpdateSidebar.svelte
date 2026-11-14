@@ -2,7 +2,7 @@
   import { getContext } from "svelte";
   import { readable } from "svelte/store";
   import { t } from "$lib/i18n/i18n.ts";
-  import type { AppUpdateRestartResult } from "$lib/settings/app-updates.ts";
+  import { appUpdateOffer, type AppUpdateRestartResult } from "$lib/settings/app-updates.ts";
   import {
     APP_UPDATE_CONTEXT_KEY,
     downloadPercent,
@@ -22,6 +22,18 @@
   const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
   $: state = $view?.state ?? null;
+  $: offer = $view ? appUpdateOffer($view) : null;
+  let copied = false;
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      copied = true;
+      setTimeout(() => (copied = false), 2000);
+    } catch {
+      // The command is on screen to select by hand; nothing to report for a refused clipboard.
+    }
+  }
   $: percent = state?.status === "downloading" ? downloadPercent(state.received, state.release.size) : 0;
   // Main re-checks on every click, so a refusal only shows the note and never keeps the button disabled.
   $: restartBlocked = $runActive;
@@ -45,11 +57,31 @@
   }
 </script>
 
-{#if state?.status === "available" || (state?.status === "failed" && state.code !== "check-failed")}
-  {@const retry = state.status === "failed"}
-  {@const label = retry ? $t.settings.appUpdateRetry : $t.settings.appUpdateDownload(state.release.version)}
+{#if offer?.kind === "apt"}
+  {@const label = copied ? $t.settings.appUpdateCommandCopied : $t.settings.appUpdateCopyCommand}
+  <div class="side-update" class:collapsed data-app-update="available-apt">
+    {#if !collapsed}
+      <p class="side-update-note">{$t.settings.appUpdateAptNote(offer.version)}</p>
+      <code class="side-update-command">{offer.command}</code>
+    {/if}
+    <button
+      class="side-update-button"
+      type="button"
+      title={label}
+      aria-label={collapsed ? label : undefined}
+      onclick={() => copyCommand(offer.command)}
+    >
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z" />
+      </svg>
+      {#if !collapsed}<span>{label}</span>{/if}
+    </button>
+  </div>
+{:else if (offer?.kind === "download" || offer?.kind === "retry") && state && (state.status === "available" || state.status === "failed")}
+  {@const retry = offer.kind === "retry"}
+  {@const label = retry ? $t.settings.appUpdateRetry : $t.settings.appUpdateDownload(offer.version)}
   <div class="side-update" class:collapsed data-app-update={state.status}>
-    {#if retry && !collapsed}
+    {#if retry && !collapsed && state.status === "failed" && state.code !== "check-failed"}
       <p class="side-update-note">{$t.settings.appUpdateFailedShort[state.code]}</p>
     {/if}
     <button
@@ -158,6 +190,18 @@
     color: rgba(255, 255, 255, 0.5);
     font-size: 12px;
     line-height: 1.4;
+  }
+
+  .side-update-command {
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.08);
+    color: white;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    user-select: all;
   }
 
   .side-update-button {

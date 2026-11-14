@@ -588,6 +588,7 @@ async function start() {
   const appUpdateView = (): AppUpdateView => ({
     currentVersion: app.getVersion(),
     state: appUpdater.state(),
+    install: appUpdatesSupport.supported ? appUpdatesSupport.install : "squirrel",
   });
   const appUpdater = createAppUpdater({
     support: appUpdatesSupport,
