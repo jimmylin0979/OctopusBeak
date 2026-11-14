@@ -26,7 +26,7 @@ export function createSquirrelHandoff(deps: Readonly<{
   receive(signal: AppUpdaterSignal): void;
   reportError(code: string): void;
 }>) {
-  const squirrel = deps.support.supported && deps.support.squirrel;
+  const squirrel = deps.support.supported && deps.support.install === "squirrel";
   let closeHandoff: (() => void) | null = null;
   const end = () => {
     closeHandoff?.();

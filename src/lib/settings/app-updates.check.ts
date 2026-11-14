@@ -24,7 +24,7 @@ const SUPPORTED: AppUpdateSupport = {
   supported: true,
   feedUrl: APP_UPDATE_FEED_URL,
   downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX,
-  squirrel: true,
+  install: "squirrel",
 };
 
 function release(version: string): AppRelease {
@@ -142,24 +142,24 @@ test("only a strictly newer x.y.z counts as newer", () => {
 test("packaged builds read only the GitHub feed and ignore the development fixture", () => {
   const fixture = "http://127.0.0.1:4555/update-feed-darwin-arm64.json";
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: true, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: true, feedFixtureUrl: fixture, platform: "darwin" }),
     SUPPORTED,
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: fixture, platform: "darwin" }),
     { supported: false, reason: "not-in-applications" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: true, testFixture: true, inApplicationsFolder: true, feedFixtureUrl: fixture }),
+    appUpdateSupport({ packaged: true, testFixture: true, inApplicationsFolder: true, feedFixtureUrl: fixture, platform: "darwin" }),
     { supported: false, reason: "development-build" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: undefined }),
+    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: undefined, platform: "darwin" }),
     { supported: false, reason: "development-build" },
   );
   assert.deepEqual(
-    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: fixture }),
-    { supported: true, feedUrl: fixture, downloadPrefix: "http://127.0.0.1:4555/", squirrel: false },
+    appUpdateSupport({ packaged: false, testFixture: true, inApplicationsFolder: false, feedFixtureUrl: fixture, platform: "darwin" }),
+    { supported: true, feedUrl: fixture, downloadPrefix: "http://127.0.0.1:4555/", install: "fixture" },
   );
   assert.deepEqual(
     appUpdateSupport({
@@ -167,9 +167,34 @@ test("packaged builds read only the GitHub feed and ignore the development fixtu
       testFixture: false,
       inApplicationsFolder: false,
       feedFixtureUrl: "https://example.com/update-feed-darwin-arm64.json",
+      platform: "darwin",
     }),
     { supported: false, reason: "development-build" },
     "the fixture feed must be on 127.0.0.1",
+  );
+});
+
+test("a packaged Linux App checks the Linux feed on this repository and only notifies", () => {
+  const linux = { packaged: true, testFixture: false, inApplicationsFolder: false, feedFixtureUrl: undefined } as const;
+  assert.deepEqual(appUpdateSupport({ ...linux, platform: "linux" }), {
+    supported: true,
+    feedUrl: "https://github.com/jimmylin0979/OctopusBeak/releases/latest/download/update-feed-linux-x64.json",
+    downloadPrefix: "https://github.com/jimmylin0979/OctopusBeak/releases/download/",
+    install: "notify",
+  });
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", feedFixtureUrl: "http://127.0.0.1:4555/update-feed-linux-x64.json" }),
+    appUpdateSupport({ ...linux, platform: "linux" }),
+    "a packaged build ignores the development fixture",
+  );
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", testFixture: true }),
+    { supported: false, reason: "development-build" },
+  );
+  assert.deepEqual(
+    appUpdateSupport({ ...linux, platform: "linux", packaged: false }),
+    { supported: false, reason: "development-build" },
+    "a source checkout never checks",
   );
 });
 

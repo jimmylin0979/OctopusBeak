@@ -5,8 +5,8 @@ import type { AppRelease, AppUpdaterSignal, AppUpdateSupport } from "../src/lib/
 import { createSquirrelHandoff } from "./squirrel-update-handoff.ts";
 
 const RELEASE = { version: "1.2.3", size: 10, sha256: "abc" } as unknown as AppRelease;
-const SQUIRREL: AppUpdateSupport = { supported: true, feedUrl: "https://feed", downloadPrefix: "https://dl/", squirrel: true };
-const FIXTURE: AppUpdateSupport = { supported: true, feedUrl: "http://fixture", downloadPrefix: "http://fixture/", squirrel: false };
+const SQUIRREL: AppUpdateSupport = { supported: true, feedUrl: "https://feed", downloadPrefix: "https://dl/", install: "squirrel" };
+const FIXTURE: AppUpdateSupport = { supported: true, feedUrl: "http://fixture", downloadPrefix: "http://fixture/", install: "fixture" };
 
 function harness(support: AppUpdateSupport, options: Readonly<{ start?: () => Promise<{ feedUrl: string; close(): void }>; rehearse?: () => Promise<boolean> }> = {}) {
   const calls: string[] = [];

@@ -9,6 +9,12 @@ export const APP_UPDATE_FEED_URL =
 /** A feed may only point at a release asset of this repository. */
 export const APP_UPDATE_DOWNLOAD_PREFIX = "https://github.com/WangWilly/OctopusBeak/releases/download/";
 
+/** ADR 0141: the repository that publishes the Ubuntu feed, the .deb, and the apt repository. */
+export const LINUX_RELEASE_REPOSITORY = "jimmylin0979/OctopusBeak";
+export const LINUX_UPDATE_FEED_URL =
+  `https://github.com/${LINUX_RELEASE_REPOSITORY}/releases/latest/download/update-feed-linux-x64.json`;
+export const LINUX_UPDATE_DOWNLOAD_PREFIX = `https://github.com/${LINUX_RELEASE_REPOSITORY}/releases/download/`;
+
 export const APP_UPDATES_ENABLED_KEY = "APP_UPDATES_ENABLED";
 export const APP_UPDATES_AUTO_DOWNLOAD_KEY = "APP_UPDATES_AUTO_DOWNLOAD";
 
@@ -71,8 +77,11 @@ export type AppUpdateSupport =
     supported: true;
     feedUrl: string;
     downloadPrefix: string;
-    /** False only for the development feed fixture, which stops before Squirrel.Mac. */
-    squirrel: boolean;
+    /**
+     * "squirrel" downloads and hands the ZIP to Squirrel.Mac; "fixture" stops before Squirrel.Mac (the
+     * development feed); "notify" only announces the release, because apt installs it (ADR 0141).
+     */
+    install: "squirrel" | "fixture" | "notify";
   }
   | { supported: false; reason: AppUpdateUnsupportedReason };
 
@@ -87,17 +96,22 @@ export function appUpdateSupport(input: {
   testFixture: boolean;
   inApplicationsFolder: boolean;
   feedFixtureUrl: string | undefined;
+  platform: NodeJS.Platform;
 }): AppUpdateSupport {
   if (!input.packaged) {
     const fixture = input.feedFixtureUrl && FIXTURE_FEED.exec(input.feedFixtureUrl);
     return fixture
-      ? { supported: true, feedUrl: input.feedFixtureUrl!, downloadPrefix: fixture[0], squirrel: false }
+      ? { supported: true, feedUrl: input.feedFixtureUrl!, downloadPrefix: fixture[0], install: "fixture" }
       : { supported: false, reason: "development-build" };
   }
   if (input.testFixture) return { supported: false, reason: "development-build" };
+  // An apt-managed App installs nothing itself, so where it sits on disk does not matter.
+  if (input.platform === "linux") {
+    return { supported: true, feedUrl: LINUX_UPDATE_FEED_URL, downloadPrefix: LINUX_UPDATE_DOWNLOAD_PREFIX, install: "notify" };
+  }
   // Squirrel.Mac cannot replace an app it cannot write; this saves a 430 MB download that would not install.
   if (!input.inApplicationsFolder) return { supported: false, reason: "not-in-applications" };
-  return { supported: true, feedUrl: APP_UPDATE_FEED_URL, downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX, squirrel: true };
+  return { supported: true, feedUrl: APP_UPDATE_FEED_URL, downloadPrefix: APP_UPDATE_DOWNLOAD_PREFIX, install: "squirrel" };
 }
 
 export type AppUpdateFailureCode = "download-failed" | "verify-failed" | "install-failed";

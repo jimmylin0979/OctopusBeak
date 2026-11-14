@@ -558,8 +558,9 @@ async function start() {
   const appUpdatesSupport = appUpdateSupport({
     packaged: app.isPackaged,
     testFixture: cdpFixture || packagedBrowserFixture,
-    inApplicationsFolder: app.isPackaged && app.isInApplicationsFolder(),
+    inApplicationsFolder: app.isPackaged && process.platform === "darwin" && app.isInApplicationsFolder(),
     feedFixtureUrl: process.env.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,
+    platform: process.platform,
   });
   const updatesDirectory = path.join(userData, "updates");
   const updatesPruned = appUpdatesSupport.supported
