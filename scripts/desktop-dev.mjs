@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { superviseProcess } from "./desktop-process-supervisor.mjs";
+import { decideSandboxLaunch } from "./desktop-sandbox-preflight.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const electron = createRequire(import.meta.url)("electron");
@@ -17,6 +19,22 @@ const env = {
 };
 if (env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE.trim())
   console.log(`[desktop:dev] Workflow failure diagnostics: ${env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE}`);
+// On Linux, Chromium's sandbox can be unable to start (an unprivileged-userns
+// restriction with no AppArmor profile for this checkout). Probe before the
+// launch so the failure comes with a way forward, never a silent downgrade.
+const args = process.argv.slice(2);
+if (process.platform === "linux" && !args.includes("--no-sandbox")) {
+  const probe = spawnSync(electron, ["--version"], { encoding: "utf8", timeout: 15_000 });
+  const decision = decideSandboxLaunch({
+    platform: process.platform,
+    args,
+    probe: { status: probe.status ?? 1, stderr: probe.stderr ?? "" },
+  });
+  if (!decision.proceed) {
+    console.error(decision.message);
+    process.exit(1);
+  }
+}
 const abort = new AbortController();
 const handlers = new Map();
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {

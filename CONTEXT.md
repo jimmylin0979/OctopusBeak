@@ -26,6 +26,10 @@ _Avoid_: package target, runtime platform
 A distributable file produced for a release target and attached to the application release.
 _Avoid_: package, source archive
 
+**Source build**:
+An unreleased desktop application a developer runs directly from the source tree. It makes no Release target commitment: being able to run a Source build on an operating system does not make that system a Release target.
+_Avoid_: unofficial release, supported platform, developer edition
+
 **Immutable release version**:
 A version that, once created for release, is never rewritten or replaced as part of normal recovery. Failed packaging or publication is repaired by retrying that same version.
 _Avoid_: retry version, replacement version

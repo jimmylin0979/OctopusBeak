@@ -142,7 +142,17 @@ The UI is Electron-only and loads the static renderer at `#/overview`.
 
 The development launcher supervises its Electron process group. See [Desktop development lifecycle](docs/runbooks/desktop-development.md) for shutdown, external-volume loss, and recording cleanup.
 
-Build an unsigned local app:
+#### Ubuntu source build (for developers; not an officially supported platform)
+
+On Ubuntu 24.04 and later you can run the commands above to build from source and start `desktop:dev`. There is no Linux release and no Linux packaging acceptance yet, so this is not a supported platform.
+
+- **Chromium sandbox**: Ubuntu 24.04+ restricts unprivileged user namespaces by default, so Electron aborts with `The SUID sandbox helper binary was found, but is not configured correctly`. When `desktop:dev` detects this it stops and lists two ways forward:
+  - Run `node scripts/desktop-apparmor-profile.mjs` and follow the printed `sudo` commands to register an AppArmor profile for this checkout, which keeps the sandbox on. The profile covers only this path's Electron executable; register it once per checkout (including each git worktree) and remove it when the checkout is deleted, as the output explains.
+  - Pass `--no-sandbox` explicitly with `npm run desktop:dev -- --no-sandbox` to run without the Chromium sandbox.
+- **Credential storage**: the app encrypts sign-in details with Electron `safeStorage`. On Linux that needs `gnome-keyring` and `libsecret`, plus a signed-in desktop session. Without a keyring the app refuses to read or write credentials.
+- **Data directory**: `~/.config/OctopusBeak/` by default.
+
+Build an unsigned local app (macOS arm64 only for now):
 
 ```bash
 npm run desktop:package
@@ -166,7 +176,7 @@ npm run workflow:dev -- fixture
 
 See the [workflow development guide](docs/agents/workflow-development.md) for how to add and test a provider. Run production bank, invoice, and synchronization tasks through the desktop app's automation interface.
 
-Both development and packaged builds store financial data in `~/Library/Application Support/OctopusBeak/data/pglite/`. Set `OCTOPUSBEAK_USER_DATA` to use a different data directory.
+Both development and packaged builds store financial data in `~/Library/Application Support/OctopusBeak/data/pglite/` (`~/.config/OctopusBeak/data/pglite/` for a Linux source build). Set `OCTOPUSBEAK_USER_DATA` to use a different data directory.
 
 </details>
 

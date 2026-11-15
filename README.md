@@ -144,7 +144,17 @@ npm run desktop:dev
 
 開發啟動器會監督該次 Electron 程序群組；關閉、外接磁碟失聯與錄影後清理方式請見[桌面開發生命週期](docs/runbooks/desktop-development.md)。
 
-建立未簽署的本機應用程式：
+#### Ubuntu 原始碼建置（開發者用，非正式支援平台）
+
+Ubuntu 24.04 以上可以用上面的指令做原始碼建置並啟動 `desktop:dev`，但目前沒有 Linux 發行版，也沒有 Linux 打包驗收，所以這不是正式支援的平台。
+
+- **Chromium sandbox**：Ubuntu 24.04 以上預設限制非特權使用者建立 user namespace，Electron 會以 `The SUID sandbox helper binary was found, but is not configured correctly` 中止。`desktop:dev` 偵測到這種情況時會停下並列出兩個做法：
+  - 執行 `node scripts/desktop-apparmor-profile.mjs`，依輸出的 `sudo` 指令為這份 checkout 註冊 AppArmor profile，sandbox 維持開啟。profile 只針對這個路徑的 Electron 執行檔；每個 checkout（含 git worktree）要各註冊一次，刪除 checkout 後請依輸出移除。
+  - 明確加上 `npm run desktop:dev -- --no-sandbox`，不使用 Chromium sandbox。
+- **憑證儲存**：App 用 Electron `safeStorage` 加密登入資料，Linux 需要 `gnome-keyring` 與 `libsecret`，並在桌面 session 中登入。沒有 keyring 時 App 會拒絕讀寫憑證。
+- **資料目錄**：預設為 `~/.config/OctopusBeak/`。
+
+建立未簽署的本機應用程式（目前僅 macOS arm64）：
 
 ```bash
 npm run desktop:package
@@ -168,7 +178,7 @@ npm run workflow:dev -- fixture
 
 新增與測試 workflow 的步驟請參閱[開發指引](docs/agents/workflow-development.md)。正式的銀行、發票與同步工作請從桌面 App 的自動化介面執行。
 
-開發版與安裝版都把金融資料存在 `~/Library/Application Support/OctopusBeak/data/pglite/`。設定 `OCTOPUSBEAK_USER_DATA` 可改用其他資料目錄。
+開發版與安裝版都把金融資料存在 `~/Library/Application Support/OctopusBeak/data/pglite/`（Linux 原始碼建置為 `~/.config/OctopusBeak/data/pglite/`）。設定 `OCTOPUSBEAK_USER_DATA` 可改用其他資料目錄。
 
 </details>
 
