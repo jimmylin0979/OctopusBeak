@@ -32,6 +32,7 @@
     "desktop:install-browsers": "node scripts/desktop-browser-install.mjs",
     "desktop:runtime-probe": "ELECTRON_RUN_AS_NODE=1 electron electron/runtime-probe.cjs",
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
+    "ci:local": "node scripts/ci-local.mjs",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:pglite-spending-performance": "node --no-warnings --experimental-strip-types src/ledger/pglite/spending-performance.ts",
