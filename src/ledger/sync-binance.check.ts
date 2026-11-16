@@ -249,8 +249,26 @@ test("non-Latin tickers Binance lists are read, and a malformed code still fails
     { symbol: "币安人生USDT", baseAsset: "币安人生", quoteAsset: "USDT" },
   ]);
   assert.equal(parseTickerPrices([{ symbol: "牛来USDT", price: "0.01" }]).get("牛来USDT"), "0.01");
-  for (const code of ["btc", "BTC USDT", "BTC/USDT", ""])
+  for (const code of ["btc", "BTC USDT", "BTC/USDT", "", "_EQ", "EQ_", "EQ__CRCL", "A".repeat(21)])
     assert.throws(() => parseExchangeInfo({ symbols: [{ symbol: code, baseAsset: "BTC", quoteAsset: "USDT" }] }), /invalid asset code/u, code);
+});
+
+test("a funding wallet holding a tokenized equity such as EQ_CRCL is collected with its other holdings", async () => {
+  const funding = (asset: string) => ({
+    "/sapi/v1/asset/get-funding-asset": () => new Response(JSON.stringify([
+      { asset, free: "0.5", locked: "0", freeze: "0", withdrawing: "0" },
+      { asset: "USDT", free: "1", locked: "0", freeze: "0", withdrawing: "0" },
+    ]), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+  });
+  const source = await collect(binanceFake(funding("EQ_CRCL")));
+  assert.deepEqual(source.wallets.find(({ wallet }) => wallet === "funding")?.balances.map(({ asset }) => asset), ["EQ_CRCL", "USDT"]);
+  assert.equal(source.valuationQuotes.has("EQ_CRCL"), false, "an asset without a USDT route stays unvalued");
+  for (const code of ["_EQ", "EQ_", "EQ__CRCL", "eq_crcl", "EQ CRCL", "EQ/CRCL", "A".repeat(21)])
+    await assert.rejects(
+      collect(binanceFake(funding(code))),
+      (error: unknown) => error instanceof Error && "kind" in error && error.kind === "invalid-response",
+      code,
+    );
 });
 
 test("a pair with more fills than one page reads the older days in 24-hour ranges", async () => {

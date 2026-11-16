@@ -206,9 +206,15 @@ function array(value: unknown, label: string): readonly unknown[] {
   return value;
 }
 
-/** Binance lists non-Latin tickers such as `币安人生`, so a code is any run of uppercase or uncased letters and digits. */
+/**
+ * Binance lists non-Latin tickers such as `币安人生`, and tokenized equities
+ * such as `EQ_CRCL` in the funding wallet. A code is runs of uppercase or
+ * uncased letters and digits, joined by single underscores.
+ */
+const ASSET_CODE = /^(?=.{1,20}$)[\p{Lu}\p{Lo}\p{Nd}]+(?:_[\p{Lu}\p{Lo}\p{Nd}]+)*$/u;
+
 function asset(value: unknown, label: string): string {
-  if (typeof value !== "string" || !/^[\p{Lu}\p{Lo}\p{Nd}]{1,20}$/u.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
+  if (typeof value !== "string" || !ASSET_CODE.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
   return value;
 }
 
