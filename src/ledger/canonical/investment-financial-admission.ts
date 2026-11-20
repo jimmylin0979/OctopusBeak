@@ -448,7 +448,8 @@ export function admitCanonicalInvestmentCapture(
   }
   if (
     capture.identity.accountNumber &&
-    (capture.sourceId === "maicoin" || capture.sourceId === "binance" ||
+    (capture.sourceId === "maicoin" ||
+      (capture.sourceId === "binance" && capture.identity.accountNumber.kind !== "platform-account") ||
       !["brokerage-account", "platform-account"].includes(
         capture.identity.accountNumber.kind,
       ))

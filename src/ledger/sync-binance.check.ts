@@ -169,6 +169,13 @@ function binanceFake(overrides: Readonly<Record<string, (params: URLSearchParams
       { asset: "LDBTC", free: "1", locked: "0" },
     ] }),
     "/sapi/v1/asset/get-funding-asset": () => json([{ asset: "USDT", free: "100", locked: "0", freeze: "0", withdrawing: "0" }]),
+    "/sapi/v1/simple-earn/flexible/position": () => json({ rows: [], total: 0 }),
+    "/sapi/v1/simple-earn/locked/position": () => json({ rows: [], total: 0 }),
+    "/sapi/v1/asset/wallet/balance": () => json([
+      { activate: true, balance: "0.1", walletName: "Spot" },
+      { activate: true, balance: "0", walletName: "Cross Margin" },
+      { activate: true, balance: "0", walletName: "USDⓈ-M Futures" },
+    ]),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("offset") === "0" && params.get("startTime") === String(taipei("2026-08-03"))
       ? [{ id: "d1", coin: "ETH", amount: "1", status: 1, walletType: 0, insertTime: taipei("2026-09-01") }]
       : []),
@@ -217,7 +224,7 @@ test("a collection signs private requests, bounds trades to observed pairs, and 
   assert.deepEqual(fake.calls.filter(({ path }) => path === "/api/v3/myTrades").map(({ params }) => params.get("symbol")),
     ["BTCUSDT", "ETHBTC", "ETHUSDT"], "BTC is held, ETH was deposited, USDT is only a quote");
   assert.equal(source.uid, "123456789");
-  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]]]);
+  assert.deepEqual(source.wallets.map(({ wallet, balances }) => [wallet, balances.map(({ asset }) => asset)]), [["spot", ["BTC"]], ["funding", ["USDT"]], ["earn", []]]);
   assert.deepEqual(source.trades.map(({ id }) => id), ["2"], "a fill before the period is not collected");
   assert.deepEqual(source.valuationQuotes.get("BTC")?.price, amount("1920000"));
   assert.deepEqual(source.valuationQuotes.get("USDT")?.price, amount("32"));
@@ -226,7 +233,7 @@ test("a collection signs private requests, bounds trades to observed pairs, and 
 test("a missing MAX usdttwd leaves holdings unvalued instead of failing the run", async () => {
   const source = await collect(binanceFake({ "/api/v3/ticker": () => new Response(JSON.stringify({ error: { code: 2003 } }), { status: 404 }) }));
   assert.equal(source.valuationQuotes.size, 0);
-  assert.equal(source.wallets.length, 2);
+  assert.equal(source.wallets.length, 3);
 });
 
 test("a refused key fails the collection as a credential failure", async () => {
@@ -262,13 +269,78 @@ test("a funding wallet holding a tokenized equity such as EQ_CRCL is collected w
   });
   const source = await collect(binanceFake(funding("EQ_CRCL")));
   assert.deepEqual(source.wallets.find(({ wallet }) => wallet === "funding")?.balances.map(({ asset }) => asset), ["EQ_CRCL", "USDT"]);
-  assert.equal(source.valuationQuotes.has("EQ_CRCL"), false, "an asset without a USDT route stays unvalued");
+  assert.equal(source.valuationQuotes.has("EQ_CRCL"), false, "a share Binance cannot quote stays unvalued");
   for (const code of ["_EQ", "EQ_", "EQ__CRCL", "eq_crcl", "EQ CRCL", "EQ/CRCL", "A".repeat(21)])
     await assert.rejects(
       collect(binanceFake(funding(code))),
       (error: unknown) => error instanceof Error && "kind" in error && error.kind === "invalid-response",
       code,
     );
+});
+
+const EQ_FUNDING = {
+  "/sapi/v1/asset/get-funding-asset": () => new Response(JSON.stringify([
+    { asset: "EQ_CRCL", free: "3.76", locked: "0", freeze: "0", withdrawing: "0" },
+  ]), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+};
+
+test("a tokenized equity is valued from Binance's US equity quote, bid and ask kept as evidence", async () => {
+  const fake = binanceFake({
+    ...EQ_FUNDING,
+    "/sapi/v1/equity/market/quote": () => new Response(JSON.stringify({ symbol: "CRCL", bidPrice: "57.40", askPrice: "57.60", bidSize: 1, askSize: 2 }), { status: 200 }),
+  });
+  const source = await collect(fake);
+  const quote = source.valuationQuotes.get("EQ_CRCL");
+  assert.deepEqual(quote?.price, amount("1840"), "57.5 USD at 32 TWD");
+  assert.deepEqual(quote?.components, [
+    { market: "binance:equity:CRCL:bid", price: "57.40" },
+    { market: "binance:equity:CRCL:ask", price: "57.60" },
+    { market: "max:usdttwd", price: "32" },
+  ]);
+  const call = fake.calls.find(({ path }) => path === "/sapi/v1/equity/market/quote")!;
+  assert.equal(call.params.get("symbol"), "CRCL");
+  assert.equal(call.params.get("signature"), null, "a quote needs the key, not a signature");
+});
+
+test("an equity with no quote stays unvalued and does not fail the run", async () => {
+  for (const response of [() => new Response("", { status: 200 }), () => new Response("{}", { status: 403 })]) {
+    const source = await collect(binanceFake({ ...EQ_FUNDING, "/sapi/v1/equity/market/quote": response }));
+    assert.equal(source.valuationQuotes.has("EQ_CRCL"), false);
+    assert.equal(source.wallets.find(({ wallet }) => wallet === "funding")?.balances.length, 1);
+  }
+});
+
+test("Simple Earn flexible and locked positions become one earn wallet, paged and merged by asset", async () => {
+  const flexible = (params: URLSearchParams) => new Response(JSON.stringify(params.get("current") === "1"
+    ? { rows: Array.from({ length: 100 }, (_, index) => ({ asset: index === 0 ? "USDT" : `T${index}`, totalAmount: index === 0 ? "3000" : "0" })), total: 101 }
+    : { rows: [{ asset: "BNB", totalAmount: "2" }], total: 101 }), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } });
+  const source = await collect(binanceFake({
+    "/sapi/v1/simple-earn/flexible/position": flexible,
+    "/sapi/v1/simple-earn/locked/position": () => new Response(JSON.stringify({ rows: [{ asset: "USDT", amount: "198" }], total: 1 }), { status: 200 }),
+  }));
+  const earn = source.wallets.find(({ wallet }) => wallet === "earn")!;
+  assert.deepEqual(earn.balances.map(({ asset, quantity }) => [asset, quantity]), [["USDT", amount("3198")], ["BNB", amount("2")]]);
+  assert.equal(earn.providerDate.effectiveAt, "2026-10-31T07:00:00.000Z");
+});
+
+test("margin and futures are collected only where Binance shows a balance", async () => {
+  const fake = binanceFake({
+    "/sapi/v1/asset/wallet/balance": () => new Response(JSON.stringify([
+      { activate: true, balance: "0.5", walletName: "Cross Margin" },
+      { activate: true, balance: "0.1", walletName: "USDⓈ-M Futures" },
+      { activate: false, balance: "0", walletName: "COIN-M Futures" },
+    ]), { status: 200 }),
+    "/sapi/v1/margin/account": () => new Response(JSON.stringify({ userAssets: [{ asset: "BTC", free: "1", locked: "0", borrowed: "0.4", netAsset: "0.6" }] }), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+    "/fapi/v3/balance": () => new Response(JSON.stringify([{ asset: "USDT", balance: "50", crossUnPnl: "-3" }]), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+  });
+  const source = await collect(fake);
+  assert.deepEqual(source.wallets.map(({ wallet }) => wallet), ["spot", "funding", "earn", "margin", "futures"]);
+  assert.deepEqual(source.wallets.find(({ wallet }) => wallet === "margin")?.balances, [{ asset: "BTC", quantity: amount("6", 1) }]);
+  assert.deepEqual(source.wallets.find(({ wallet }) => wallet === "futures")?.balances, [{ asset: "USDT", quantity: amount("50") }]);
+  assert.equal(fake.calls.some(({ path }) => path === "/sapi/v1/margin/account"), true);
+  const quiet = binanceFake();
+  await collect(quiet);
+  assert.equal(quiet.calls.some(({ path }) => path === "/sapi/v1/margin/account" || path === "/fapi/v3/balance"), false);
 });
 
 test("a pair with more fills than one page reads the older days in 24-hour ranges", async () => {

@@ -31,8 +31,8 @@ export const BINANCE_SOURCE: VerifiedSource = {
   ],
   setupGuide: {
     summary: localized(
-      "Create a read-only Binance API key to synchronize your spot and funding wallets, trades, deposits and withdrawals.",
-      "請建立唯讀的 Binance API 金鑰，以同步現貨與資金錢包、成交、充值與提領紀錄。",
+      "Create a read-only Binance API key to synchronize your spot, funding, Simple Earn, margin and futures wallets, trades, deposits and withdrawals.",
+      "請建立唯讀的 Binance API 金鑰，以同步現貨、資金、Simple Earn、保證金與合約錢包，以及成交、充值與提領紀錄。",
     ),
     requirements: [
       localized("A verified Binance account", "已完成驗證的 Binance 帳戶"),

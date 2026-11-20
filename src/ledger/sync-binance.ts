@@ -25,12 +25,14 @@ import type {
 } from "./canonical/binance-crypto-adapters.ts";
 
 const API_BASE_URL = "https://api.binance.com";
+const FUTURES_API_BASE_URL = "https://fapi.binance.com";
 const MAX_API_BASE_URL = "https://max-api.maicoin.com";
 const RECV_WINDOW_MS = 10_000;
 const FETCH_TIMEOUT_MS = 30_000;
 const RETRY_DELAYS_MS = [500, 1_000, 2_000];
 const HISTORY_PAGE_LIMIT = 1000;
 const TRANSFER_PAGE_SIZE = 100;
+const EARN_PAGE_SIZE = 100;
 
 export type BinanceCredentials = Readonly<{ apiKey: string; apiSecret: string }>;
 
@@ -141,8 +143,18 @@ export class BinanceClient {
     return this.#request("GET", API_BASE_URL, path, new URLSearchParams(params).toString(), {});
   }
 
-  signed(method: "GET" | "POST", path: string, params: Readonly<Record<string, string>> = {}): Promise<BinanceResponse> {
-    return this.#request(method, API_BASE_URL, path, () => signBinanceQuery({
+  /** A request that needs the API key but no signature, such as the equity quote. */
+  keyedGet(path: string, params: Readonly<Record<string, string>>): Promise<BinanceResponse> {
+    return this.#request("GET", API_BASE_URL, path, new URLSearchParams(params).toString(), { "X-MBX-APIKEY": this.#credentials.apiKey });
+  }
+
+  signed(
+    method: "GET" | "POST",
+    path: string,
+    params: Readonly<Record<string, string>> = {},
+    base: string = API_BASE_URL,
+  ): Promise<BinanceResponse> {
+    return this.#request(method, base, path, () => signBinanceQuery({
       ...params,
       recvWindow: String(RECV_WINDOW_MS),
       timestamp: String(this.now()),
@@ -290,9 +302,55 @@ export function parseFundingAssets(body: unknown): readonly BinanceBalance[] {
   return balances(array(body, "funding assets"), "funding asset", ["free", "locked", "freeze", "withdrawing"]);
 }
 
+/** Simple Earn positions: flexible rows hold `totalAmount`, locked rows `amount`. */
+export function parseEarnPositions(body: unknown, amountField: "totalAmount" | "amount"): Readonly<{ total: number; balances: readonly BinanceBalance[] }> {
+  const page = record(body, "Simple Earn positions");
+  const rows = array(page.rows, "Simple Earn rows");
+  if (typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0)
+    throw invalid("Binance Simple Earn positions have no total.");
+  return { total: page.total, balances: balances(rows, "Simple Earn position", [amountField]) };
+}
+
+/** Cross margin: what the person owns is each asset's net, so a borrowed asset has none. */
+export function parseMarginAccount(body: unknown): readonly BinanceBalance[] {
+  return balances(array(record(body, "margin account").userAssets, "margin assets"), "margin asset", ["netAsset"]);
+}
+
+/** USDⓈ-M futures: the wallet balance, which excludes unrealized profit and loss. */
+export function parseFuturesBalances(body: unknown): readonly BinanceBalance[] {
+  return balances(array(body, "futures balances"), "futures balance", ["balance"]);
+}
+
+/** The wallets Binance reports a balance in, by the name Binance gives them. */
+export function parseWalletBalances(body: unknown): ReadonlySet<string> {
+  const held = new Set<string>();
+  for (const value of array(body, "wallet balances")) {
+    const row = record(value, "wallet balance");
+    if (typeof row.walletName !== "string") throw invalid("Binance wallet balance has no wallet name.");
+    if (decimal(row.balance, `${row.walletName} balance`).coefficient !== "0") held.add(row.walletName);
+  }
+  return held;
+}
+
+/** A US-equity quote: the bid and ask, whose midpoint is the price. */
+export function parseEquityQuote(body: unknown, ticker: string): Readonly<{ price: ExactAmount; components: readonly BinancePriceComponent[] }> {
+  const row = record(body, `${ticker} quote`);
+  const bid = decimal(row.bidPrice, `${ticker} bid`);
+  const ask = decimal(row.askPrice, `${ticker} ask`);
+  if (bid.coefficient === "0" || ask.coefficient === "0") throw invalid(`Binance ${ticker} quote has no price.`);
+  return {
+    price: multiplyExact(addExact(bid, ask), { coefficient: "5", scale: 1 }),
+    components: [
+      { market: `binance:equity:${ticker}:bid`, price: row.bidPrice as string },
+      { market: `binance:equity:${ticker}:ask`, price: row.askPrice as string },
+    ],
+  };
+}
+
 /**
  * Simple Earn shows its positions in the spot account as `LD` plus the asset.
- * Earn is out of scope (ADR 0084), so such a balance is not reported. A
+ * The earn wallet reports them from the Simple Earn endpoints (ADR 0144), so
+ * the mirrored balance is not reported twice. A
  * listed asset that merely starts with LD, such as LDO, is kept.
  */
 export function withoutEarnBalances(rows: readonly BinanceBalance[], listedAssets: ReadonlySet<string>): BinanceBalance[] {
@@ -441,10 +499,19 @@ export function boundedTradePairs(
 
 type UsdtPrice = Readonly<{ price: ExactAmount; components: readonly BinancePriceComponent[] }>;
 
+export type BinanceEquityQuote = Readonly<{ price: ExactAmount; components: readonly BinancePriceComponent[] }>;
+
 type PriceBook = Readonly<{
   bySides: ReadonlyMap<string, string>;
   prices: ReadonlyMap<string, string>;
+  /** US-dollar quotes of tokenized equities, keyed by asset code such as `EQ_CRCL`. */
+  equities: ReadonlyMap<string, BinanceEquityQuote>;
 }>;
+
+/** `EQ_CRCL` is the tokenized share of the US equity `CRCL`. */
+export function equityTicker(code: string): string | null {
+  return /^EQ_([A-Z0-9]+)$/u.exec(code)?.[1] ?? null;
+}
 
 function listed(book: PriceBook, base: string, quote: string): BinancePriceComponent | null {
   const symbol = book.bySides.get(`${base}/${quote}`);
@@ -457,6 +524,7 @@ const amountOf = (component: BinancePriceComponent): ExactAmount => decimal(comp
 /** Each way to reach USDT, tried in order: the asset itself, direct, inverse, then through BTC. */
 const USDT_ROUTES: readonly ((asset: string, book: PriceBook) => UsdtPrice | null)[] = [
   (code) => code === "USDT" ? { price: { coefficient: "1", scale: 0 }, components: [] } : null,
+  (code, book) => book.equities.get(code) ?? null,
   (code, book) => {
     const direct = listed(book, code, "USDT");
     return direct && { price: amountOf(direct), components: [direct] };
@@ -474,8 +542,8 @@ const USDT_ROUTES: readonly ((asset: string, book: PriceBook) => UsdtPrice | nul
 ];
 
 /**
- * Each asset's TWD price: its USDT price from Binance times MAX's public
- * `usdttwd`. Without `usdttwd`, or without a USDT route, the asset gets no
+ * Each asset's TWD price: its USDT price from Binance (a tokenized equity's
+ * US-dollar quote counts as USDT) times MAX's public `usdttwd`. Without `usdttwd`, or without a USDT route, the asset gets no
  * quote and its holding stays unvalued in its own units.
  */
 export function binanceTwdQuotes(
@@ -483,12 +551,14 @@ export function binanceTwdQuotes(
   symbols: readonly BinanceSymbol[],
   prices: ReadonlyMap<string, string>,
   usdtTwd: string | null,
+  equities: ReadonlyMap<string, BinanceEquityQuote> = new Map(),
 ): ReadonlyMap<string, BinanceTwdQuote> {
   const quotes = new Map<string, BinanceTwdQuote>();
   if (usdtTwd === null) return quotes;
   const book: PriceBook = {
     bySides: new Map(symbols.map(({ symbol, baseAsset, quoteAsset }) => [`${baseAsset}/${quoteAsset}`, symbol])),
     prices,
+    equities,
   };
   const usdtTwdComponent = { market: "max:usdttwd", price: usdtTwd };
   for (const code of assets) {
@@ -618,6 +688,49 @@ async function pairTrades(client: BinanceClient, pair: BinanceSymbol, startTime:
   return [...byId.values()].filter((trade) => trade.time >= startTime);
 }
 
+/** Every page of one Simple Earn product, flexible or locked. */
+async function earnPositions(client: BinanceClient, product: "flexible" | "locked"): Promise<Readonly<{ balances: BinanceBalance[]; providerDate: string | null }>> {
+  const field = product === "flexible" ? "totalAmount" : "amount";
+  const rows: BinanceBalance[] = [];
+  let providerDate: string | null = null;
+  for (let current = 1, seen = 0; ; current += 1) {
+    const response = await client.signed("GET", `/sapi/v1/simple-earn/${product}/position`, {
+      current: String(current),
+      size: String(EARN_PAGE_SIZE),
+    });
+    providerDate ??= response.providerDate;
+    const page = parseEarnPositions(response.body, field);
+    const size = array(record(response.body, "Simple Earn positions").rows, "Simple Earn rows").length;
+    rows.push(...page.balances);
+    seen += size;
+    if (size < EARN_PAGE_SIZE || seen >= page.total) break;
+  }
+  return { balances: rows, providerDate };
+}
+
+/** One row per asset, the quantities of a repeated asset added. */
+function mergeBalances(rows: readonly BinanceBalance[]): BinanceBalance[] {
+  const byAsset = new Map<string, ExactAmount>();
+  for (const { asset: code, quantity } of rows) byAsset.set(code, addExact(byAsset.get(code) ?? { coefficient: "0", scale: 0 }, quantity));
+  return [...byAsset].map(([code, quantity]) => ({ asset: code, quantity }));
+}
+
+/** The USD quote of each tokenized equity held; one Binance cannot quote stays unvalued. */
+async function equityQuotes(client: BinanceClient, assets: Iterable<string>, signal?: AbortSignal): Promise<ReadonlyMap<string, BinanceEquityQuote>> {
+  const quotes = new Map<string, BinanceEquityQuote>();
+  for (const code of assets) {
+    const ticker = equityTicker(code);
+    if (ticker === null) continue;
+    try {
+      quotes.set(code, parseEquityQuote((await client.keyedGet("/sapi/v1/equity/market/quote", { symbol: ticker })).body, ticker));
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof BinanceSourceError)) throw error;
+    }
+  }
+  return quotes;
+}
+
 async function maxUsdtTwd(client: BinanceClient, signal?: AbortSignal): Promise<string | null> {
   try {
     const last = record((await client.maxPublicGet("/api/v3/ticker", { market: "usdttwd" })).body, "MAX ticker").last;
@@ -655,6 +768,24 @@ export async function collectBinanceSource(
       balances: parseFundingAssets(fundingResponse.body),
     },
   ];
+  const flexible = await earnPositions(client, "flexible");
+  const locked = await earnPositions(client, "locked");
+  wallets.push({
+    wallet: "earn",
+    providerDate: parseBinanceProviderDate(flexible.providerDate),
+    balances: mergeBalances([...flexible.balances, ...locked.balances]),
+  });
+  // Margin and futures exist only for an account that opened them; Binance's
+  // own wallet list says where a balance is, so no request guesses.
+  const held = parseWalletBalances((await client.signed("GET", "/sapi/v1/asset/wallet/balance")).body);
+  if (held.has("Cross Margin")) {
+    const response = await client.signed("GET", "/sapi/v1/margin/account");
+    wallets.push({ wallet: "margin", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseMarginAccount(response.body) });
+  }
+  if ([...held].some((name) => /^USD.-M Futures$/u.test(name))) {
+    const response = await client.signed("GET", "/fapi/v3/balance", {}, FUTURES_API_BASE_URL);
+    wallets.push({ wallet: "futures", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseFuturesBalances(response.body) });
+  }
   await options.onWalletsCollected?.(wallets.length);
 
   const fundWindows = binanceHistoryWindows(options.periods.fundHistory, today, client.now());
@@ -688,11 +819,13 @@ export async function collectBinanceSource(
   for (const pair of pairs) trades.push(...await pairTrades(client, pair, tradeWindow!.startTime));
 
   const prices = parseTickerPrices((await client.publicGet("/api/v3/ticker/price")).body);
+  const heldAssets = new Set(wallets.flatMap(({ balances: rows }) => rows.map(({ asset: code }) => code)));
   const valuationQuotes = binanceTwdQuotes(
-    new Set(wallets.flatMap(({ balances: rows }) => rows.map(({ asset: code }) => code))),
+    heldAssets,
     symbols,
     prices,
     await maxUsdtTwd(client, options.signal),
+    await equityQuotes(client, heldAssets, options.signal),
   );
   const uniqueTrades = unique(trades, ({ symbol, id }) => `${symbol}:${id}`);
   const uniqueTransfers = unique(transfers, ({ tranId }) => tranId);

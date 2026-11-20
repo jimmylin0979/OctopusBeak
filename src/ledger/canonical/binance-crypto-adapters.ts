@@ -12,8 +12,21 @@ export const BINANCE_INVESTMENT_CONTRACT_VERSION = "binance/investment/canonical
 export const BINANCE_INVESTMENT_AUTHORITY_ROUTE = BINANCE_INVESTMENT_CONTRACT_VERSION;
 const HOLDING_EFFECTIVE_TIME_SOURCE_FIELD = "http-date";
 
-export type BinanceWallet = "spot" | "funding";
-export const BINANCE_WALLETS: readonly BinanceWallet[] = ["spot", "funding"];
+export type BinanceWallet = "spot" | "funding" | "earn" | "margin" | "futures";
+/** Wallets every run reports, even when empty, so an emptied wallet is seen as emptied. */
+export const BINANCE_REQUIRED_WALLETS: readonly BinanceWallet[] = ["spot", "funding", "earn"];
+/** Wallets reported only when the account has them, after Binance shows a balance there. */
+export const BINANCE_OPTIONAL_WALLETS: readonly BinanceWallet[] = ["margin", "futures"];
+const BINANCE_WALLETS: readonly BinanceWallet[] = [...BINANCE_REQUIRED_WALLETS, ...BINANCE_OPTIONAL_WALLETS];
+
+/** The name the person sees on the wallet's account. */
+const WALLET_LABELS: Readonly<Record<BinanceWallet, string>> = {
+  spot: "Spot",
+  funding: "Funding",
+  earn: "Simple Earn",
+  margin: "Cross Margin",
+  futures: "USDⓈ-M Futures",
+};
 
 /** The HTTP Date of a wallet response, the only as-of evidence Binance gives a balance. */
 export type BinanceProviderDate = Readonly<{ sourceValue: string; effectiveAt: string }>;
@@ -192,6 +205,12 @@ function captureForWallet(
       accountKey,
       accountType: "investment",
       accountSubtype: "crypto_exchange",
+      accountNumber: {
+        value: WALLET_LABELS[snapshot.wallet],
+        kind: "platform-account",
+        evidenceVersion: BINANCE_INVESTMENT_CONTRACT_VERSION,
+        sourceField: "wallet",
+      },
       reportingCurrency: "TWD",
     },
     // ADR 0084: no transactionHistory, because a Bounded trade history never
@@ -229,17 +248,17 @@ function captureForWallet(
   };
 }
 
-/** One capture per wallet, spot first; both wallets are required. */
+/** One capture per wallet, spot first; the required wallets must be present, the optional ones may be absent. */
 export function buildBinanceInvestmentCaptures(input: BinanceInvestmentCaptureBuildInput): InvestmentCaptureInput[] {
   if (!input.captureId.trim()) throw new BinanceCryptoAdapterError("Binance capture ID is required.");
-  return BINANCE_WALLETS.map((wallet) => {
+  return BINANCE_WALLETS.flatMap((wallet) => {
     const snapshots = input.wallets.filter((snapshot) => snapshot.wallet === wallet);
+    if (snapshots.length === 0 && BINANCE_OPTIONAL_WALLETS.includes(wallet)) return [];
     if (snapshots.length !== 1)
       throw new BinanceCryptoAdapterError(`Binance capture needs exactly one ${wallet} wallet snapshot.`);
     const assets = snapshots[0]!.balances.map(({ asset }) => asset);
     if (new Set(assets).size !== assets.length)
       throw new BinanceCryptoAdapterError(`Binance ${wallet} wallet lists an asset twice.`);
-    return captureForWallet(input, snapshots[0]!);
+    return [captureForWallet(input, snapshots[0]!)];
   });
 }
-

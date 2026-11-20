@@ -39,6 +39,9 @@ function binanceFetch(
       ? json({ uid: 123456789, balances: [{ asset: "BTC", free: "0.2", locked: "0" }, { asset: "ETH", free: "1", locked: "0" }] })
       : json({ code: -2015, msg: "Invalid API-key, IP, or permissions for action." }, accountStatus),
     "/sapi/v1/asset/get-funding-asset": () => json(funding),
+    "/sapi/v1/simple-earn/flexible/position": () => json({ rows: [{ asset: "USDT", totalAmount: "40" }], total: 1 }),
+    "/sapi/v1/simple-earn/locked/position": () => json({ rows: [], total: 0 }),
+    "/sapi/v1/asset/wallet/balance": () => json([{ activate: true, balance: "0.1", walletName: "Spot" }]),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("startTime") === String(Date.parse("2026-08-03T00:00:00+08:00"))
       ? [{ id: "d1", coin: "USDT", amount: "100", status: 1, walletType: 1, insertTime: taipei("2026-09-01") }]
       : []),
@@ -62,7 +65,7 @@ function binanceFetch(
   }) as typeof fetch;
 }
 
-test("Binance workflow commits both wallets and their bounded history through the canonical worker", async () => {
+test("Binance workflow commits every wallet and their bounded history through the canonical worker", async () => {
   const root = await mkdtemp(join(tmpdir(), "binance-pglite-workflow-"));
   const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
@@ -92,16 +95,18 @@ test("Binance workflow commits both wallets and their bounded history through th
     const result = await executor.run("sync-binance", "synthetic-binance-run", input, new AbortController().signal) as {
       counts: Record<string, number>;
     };
-    assert.deepEqual(result.counts, { canonicalCaptureCount: 2, accountCount: 2, statementRowCount: 4 });
+    assert.deepEqual(result.counts, { canonicalCaptureCount: 3, accountCount: 3, statementRowCount: 4 });
     assert.deepEqual((await store.query<{ account_subtype: string }>(
       "SELECT account_subtype FROM investment_accounts WHERE source_id = 'binance' ORDER BY account_subtype",
-    )).rows.map(({ account_subtype }) => account_subtype), ["crypto_exchange", "crypto_exchange"]);
+    )).rows.map(({ account_subtype }) => account_subtype), ["crypto_exchange", "crypto_exchange", "crypto_exchange"]);
     assert.equal(await count(
       "SELECT COUNT(*)::int AS count FROM capture_scopes scope JOIN source_captures capture ON capture.capture_id = scope.capture_id WHERE capture.record_kind = 'investment-source-record' AND scope.scope_kind = 'point-in-time'",
-    ), 2, "neither capture claims a complete history range");
-    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_snapshots"), 2);
-    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE is_current = 1"), 3);
-    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE valuation_currency = 'TWD'"), 2,
+    ), 3, "neither capture claims a complete history range");
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_snapshots"), 3);
+    const walletNames = await store.query<{ account_no: string }>("SELECT account_no FROM financial_accounts WHERE institution_key = 'binance' ORDER BY account_no");
+    assert.deepEqual(walletNames.rows.map(({ account_no }) => account_no), ["Funding", "Simple Earn", "Spot"], "each wallet's account is named after it");
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE is_current = 1"), 4);
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_holding_observations WHERE valuation_currency = 'TWD'"), 3,
       "BTC and USDT have a USDT route; ETH has none and stays unvalued");
     assert.deepEqual((await store.query<{ action: string; cash_currency: string }>(
       "SELECT action, cash_currency FROM investment_transactions ORDER BY effective_on, action",
