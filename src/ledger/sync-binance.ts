@@ -313,7 +313,21 @@ export function parseEarnPositions(body: unknown, amountField: "totalAmount" | "
 
 /** Cross margin: what the person owns is each asset's net, so a borrowed asset has none. */
 export function parseMarginAccount(body: unknown): readonly BinanceBalance[] {
-  return balances(array(record(body, "margin account").userAssets, "margin assets"), "margin asset", ["netAsset"]);
+  const rows = array(record(body, "margin account").userAssets, "margin assets").map((value) => {
+    const row = record(value, "margin asset");
+    return isNegativeDecimal(row.netAsset) ? { ...row, netAsset: "0" } : row;
+  });
+  return balances(rows, "margin asset", ["netAsset"]);
+}
+
+/** An asset borrowed beyond what is held has a negative net, which the person owns none of. */
+function isNegativeDecimal(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    return parseExactDecimalLexeme(value).coefficient < 0n;
+  } catch {
+    return false;
+  }
 }
 
 /** USDⓈ-M futures: the wallet balance, which excludes unrealized profit and loss. */
@@ -708,6 +722,21 @@ async function earnPositions(client: BinanceClient, product: "flexible" | "locke
   return { balances: rows, providerDate };
 }
 
+/**
+ * A wallet the key may not be allowed to read. Binance refusing the request
+ * (permission, IP, region) leaves the wallet uncollected; an outage or an
+ * unreadable answer still fails the run, so a wallet never vanishes by chance.
+ */
+async function optionalWallet(collect: () => Promise<BinanceWalletSnapshot>, signal?: AbortSignal): Promise<BinanceWalletSnapshot | null> {
+  try {
+    return await collect();
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof BinanceSourceError && (error.kind === "credential" || error.kind === "rejected" || error.kind === "region-blocked")) return null;
+    throw error;
+  }
+}
+
 /** One row per asset, the quantities of a repeated asset added. */
 function mergeBalances(rows: readonly BinanceBalance[]): BinanceBalance[] {
   const byAsset = new Map<string, ExactAmount>();
@@ -778,13 +807,21 @@ export async function collectBinanceSource(
   // Margin and futures exist only for an account that opened them; Binance's
   // own wallet list says where a balance is, so no request guesses.
   const held = parseWalletBalances((await client.signed("GET", "/sapi/v1/asset/wallet/balance")).body);
+  // A key may not be allowed to read one of them (futures needs its own
+  // permission), which leaves that wallet uncollected rather than failing spot.
   if (held.has("Cross Margin")) {
-    const response = await client.signed("GET", "/sapi/v1/margin/account");
-    wallets.push({ wallet: "margin", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseMarginAccount(response.body) });
+    const margin = await optionalWallet(async () => {
+      const response = await client.signed("GET", "/sapi/v1/margin/account");
+      return { wallet: "margin", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseMarginAccount(response.body) };
+    }, options.signal);
+    if (margin) wallets.push(margin);
   }
   if ([...held].some((name) => /^USD.-M Futures$/u.test(name))) {
-    const response = await client.signed("GET", "/fapi/v3/balance", {}, FUTURES_API_BASE_URL);
-    wallets.push({ wallet: "futures", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseFuturesBalances(response.body) });
+    const futures = await optionalWallet(async () => {
+      const response = await client.signed("GET", "/fapi/v3/balance", {}, FUTURES_API_BASE_URL);
+      return { wallet: "futures", providerDate: parseBinanceProviderDate(response.providerDate), balances: parseFuturesBalances(response.body) };
+    }, options.signal);
+    if (futures) wallets.push(futures);
   }
   await options.onWalletsCollected?.(wallets.length);
 

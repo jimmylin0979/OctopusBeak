@@ -9,6 +9,7 @@ import {
   parseDeposits,
   parseExchangeInfo,
   parseFundingAssets,
+  parseMarginAccount,
   parseTickerPrices,
   parseTransferPage,
   parseWithdrawals,
@@ -341,6 +342,53 @@ test("margin and futures are collected only where Binance shows a balance", asyn
   const quiet = binanceFake();
   await collect(quiet);
   assert.equal(quiet.calls.some(({ path }) => path === "/sapi/v1/margin/account" || path === "/fapi/v3/balance"), false);
+});
+
+const HELD_MARGIN_AND_FUTURES = () => new Response(JSON.stringify([
+  { activate: true, balance: "0.5", walletName: "Cross Margin" },
+  { activate: true, balance: "0.1", walletName: "USDⓈ-M Futures" },
+]), { status: 200 });
+
+test("a borrowed margin asset counts nothing instead of failing the run", async () => {
+  const source = await collect(binanceFake({
+    "/sapi/v1/asset/wallet/balance": HELD_MARGIN_AND_FUTURES,
+    "/sapi/v1/margin/account": () => new Response(JSON.stringify({ userAssets: [
+      { asset: "BTC", free: "0.1", locked: "0", borrowed: "0.3", netAsset: "-0.2" },
+      { asset: "ETH", free: "2", locked: "0", borrowed: "0", netAsset: "2" },
+    ] }), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+    "/fapi/v3/balance": () => new Response(JSON.stringify([]), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } }),
+  }));
+  assert.deepEqual(source.wallets.find(({ wallet }) => wallet === "margin")?.balances, [{ asset: "ETH", quantity: amount("2") }]);
+  assert.throws(
+    () => parseMarginAccount({ userAssets: [{ asset: "BTC", netAsset: "-abc" }] }),
+    (error: unknown) => error instanceof Error && "kind" in error && error.kind === "invalid-response",
+    "an unreadable net is still refused",
+  );
+});
+
+test("a margin or futures wallet the key may not read is left out, and spot still syncs", async () => {
+  for (const response of [
+    () => new Response(JSON.stringify({ code: -2015, msg: "Invalid API-key, IP, or permissions for action." }), { status: 401 }),
+    () => new Response(JSON.stringify({ code: -2008, msg: "refused" }), { status: 400 }),
+  ]) {
+    const source = await collect(binanceFake({
+      "/sapi/v1/asset/wallet/balance": HELD_MARGIN_AND_FUTURES,
+      "/sapi/v1/margin/account": response,
+      "/fapi/v3/balance": response,
+    }));
+    assert.deepEqual(source.wallets.map(({ wallet }) => wallet), ["spot", "funding", "earn"]);
+  }
+});
+
+test("an unreadable answer from an optional wallet still fails the run", async () => {
+  await assert.rejects(
+    collect(binanceFake({
+      "/sapi/v1/asset/wallet/balance": HELD_MARGIN_AND_FUTURES,
+      "/sapi/v1/margin/account": () => new Response("{}", { status: 400 }),
+      "/fapi/v3/balance": () => new Response("not a list", { status: 200 }),
+    })),
+    (error: unknown) => error instanceof Error && "kind" in error && error.kind === "invalid-response",
+  );
 });
 
 test("a pair with more fills than one page reads the older days in 24-hour ranges", async () => {
