@@ -17,6 +17,7 @@ const SYNTHETIC_BINANCE_INPUT: BinanceInvestmentCaptureBuildInput = {
   wallets: [
     { wallet: "spot", providerDate, balances: [{ asset: "BTC", quantity: amount("15", 2) }, { asset: "SOL", quantity: amount("3") }] },
     { wallet: "funding", providerDate, balances: [{ asset: "USDT", quantity: amount("100") }] },
+    { wallet: "earn", providerDate, balances: [{ asset: "USDT", quantity: amount("3198") }] },
   ],
   trades: [{
     symbol: "BTCUSDT", id: "42", baseAsset: "BTC", quoteAsset: "USDT", side: "buy",
@@ -33,8 +34,12 @@ const SYNTHETIC_BINANCE_INPUT: BinanceInvestmentCaptureBuildInput = {
   }]]),
 };
 
-test("spot and funding become two Crypto financial accounts with complete holding snapshots", () => {
-  const [spot, funding] = buildBinanceInvestmentCaptures(SYNTHETIC_BINANCE_INPUT);
+test("each wallet becomes a Crypto financial account named after it, with a complete holding snapshot", () => {
+  const [spot, funding, earn, ...rest] = buildBinanceInvestmentCaptures(SYNTHETIC_BINANCE_INPUT);
+  assert.equal(rest.length, 0, "margin and futures are reported only when the account has them");
+  assert.deepEqual([spot, funding, earn].map((capture) => capture!.identity.accountNumber?.value), ["Spot", "Funding", "Simple Earn"]);
+  assert.equal(earn!.holdings[0]?.quantity?.coefficient, "3198");
+  admitCanonicalInvestmentCapture(earn!);
   assert.equal(spot!.identity.accountKey, deriveBinanceAccountKey("123456789", "spot"));
   assert.equal(funding!.identity.accountKey, deriveBinanceAccountKey("123456789", "funding"));
   assert.notEqual(spot!.identity.accountKey, funding!.identity.accountKey);
@@ -81,6 +86,19 @@ test("trades and movements map to investment actions on the wallet that booked t
     "a deposited asset no longer held is still a captured Security");
 });
 
-test("a capture without both wallets is refused", () => {
+test("a margin or futures wallet is an account of its own when the account has one", () => {
+  const captures = buildBinanceInvestmentCaptures({
+    ...SYNTHETIC_BINANCE_INPUT,
+    wallets: [
+      ...SYNTHETIC_BINANCE_INPUT.wallets,
+      { wallet: "margin", providerDate, balances: [{ asset: "BTC", quantity: amount("1") }] },
+      { wallet: "futures", providerDate, balances: [{ asset: "USDT", quantity: amount("50") }] },
+    ],
+  });
+  assert.deepEqual(captures.map((capture) => capture.identity.accountNumber?.value), ["Spot", "Funding", "Simple Earn", "Cross Margin", "USDⓈ-M Futures"]);
+  for (const capture of captures) admitCanonicalInvestmentCapture(capture);
+});
+
+test("a capture without a required wallet is refused", () => {
   assert.throws(() => buildBinanceInvestmentCaptures({ ...SYNTHETIC_BINANCE_INPUT, wallets: SYNTHETIC_BINANCE_INPUT.wallets.slice(0, 1) }), /funding wallet/u);
 });

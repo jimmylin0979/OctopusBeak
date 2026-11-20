@@ -1,6 +1,6 @@
 # Binance declares a bounded trade history
 
-Status: accepted
+Status: accepted. The wallet scope and valuation points are amended by [ADR 0144](0144-binance-reports-every-wallet-the-account-holds-and-prices-tokenized-equities.md).
 
 Builds on the MaiCoin Verified source (issue #138), [ADR 0057](0057-verified-source-definition-owns-every-per-source-fact.md) and [ADR 0077](0077-a-verified-product-declares-its-collection-period.md). The read-only-key and wallet facts were learned from the MIT-licensed [all-set-tw](https://github.com/TedLin1993/all-set-tw) `binance` connector, which collects holdings only; no code is copied from it.
 
