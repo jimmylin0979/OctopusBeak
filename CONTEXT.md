@@ -985,6 +985,14 @@ _Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
 An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. A sync's summary notification leads with it and opens where the person resolves it; transient failures are only counted there.
 _Avoid_: Transient failure, retryable failure, human assistance
 
+**Run live view**:
+A read-only, in-App view of a running manual Automation Task Run's browser page with the current step name, opened from the source's Automation card. Frames exist only in memory while the view is open, and nothing visual survives the run (ADR 0147).
+_Avoid_: Assist viewer, screenshot log, headed browser
+
+**Run intervention**:
+A pause of a manual Automation Task Run in which the person controls the run's browser page, for example to close an unexpected dialog, and then hands it back. It begins when the workflow cannot classify the page or when the person presses Take over, never during a Verification Stage, and ends by Hand back, Give up, or five minutes without the person. Scheduled runs have none. Only one is active at a time (ADR 0147).
+_Avoid_: Human assistance, Assist, manual resume, Session takeover
+
 **Session takeover**:
 A provider sign-in that ends the person's other session with that provider, such as its phone App, either because the provider allows one session or because the workflow confirms the provider's duplicate-login prompt. Manual and scheduled runs may cause it; sign-in settings disclose it for each source that does. A source can confirm only a takeover prompt it declares beside that disclosure, and only once per sign-in.
 _Avoid_: Silent sign-out, account lock, device registration
