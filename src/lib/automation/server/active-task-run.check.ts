@@ -977,6 +977,23 @@ test("a stop while paused ends the pause and the workflow's wait", async () => {
   await run.finish(fail("cancelled"));
 });
 
+test("a pause ends with the execution that holds it, so a later timer cannot turn another failure into a timeout", async () => {
+  const { run, taskRunId, execution, timers } = await runningManual();
+  await run.requestTakeOver();
+  const paused = run.interventionSafePoint(run.signal);
+  await settledOrNot(paused);
+  // The workflow stopped waiting (say a dialog failed the sign-in) and its worker ended.
+  execution.end();
+  await assert.rejects(paused, /has ended/u);
+  assert.equal(run.intervention(), null);
+  assert.equal(timers.pending(), 0, "the 5 minutes stop with the pause");
+  timers.advance(10 * 60_000);
+  await run.finish(fail("authentication-dialog-interrupted"));
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.equal(finished?.appWorkflowOutcome?.errorCode, "authentication-dialog-interrupted");
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["take-over", "paused"]);
+});
+
 test("Take over is refused for a scheduled run, during a Verification Stage, and when the run is not running", async () => {
   const scheduled = await open({ taskId: "sinopac-statements", scheduledAtUtc: "2026-11-22T01:00:00.000Z" });
   await scheduled.run.transition("running");

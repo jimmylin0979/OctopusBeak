@@ -419,7 +419,14 @@ export function openActiveTaskRun(input: Readonly<{
   let intervention: RunInterventionState | null = null;
   let pauses = 0;
   let interventionTimedOut = false;
-  let pause: Readonly<{ timer: unknown; settle(resolution: RunInterventionResolution): void; drop(): void }> | null = null;
+  let pause: Readonly<{
+    /** The Workflow execution waiting at the safe point; its end ends the pause. */
+    owner: WorkflowExecution | null;
+    timer: unknown;
+    settle(resolution: RunInterventionResolution): void;
+    fail(error: Error): void;
+    drop(): void;
+  }> | null = null;
 
   const publish = () => {
     runtime.upsert({
@@ -509,6 +516,8 @@ export function openActiveTaskRun(input: Readonly<{
         scope = null;
         hostedPage = null;
         waiter?.reject(endedError());
+        // A pause this execution reached ends with it: no one waits at that safe point any more.
+        if (pause?.owner === execution) endPause()?.fail(endedError());
         if (currentExecution === execution) currentExecution = null;
       },
     };
@@ -606,6 +615,7 @@ export function openActiveTaskRun(input: Readonly<{
           reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
         };
         const current = {
+          owner: currentExecution,
           timer: timers.setTimeout(() => {
             if (pause !== current) return;
             interventionTimedOut = true;
@@ -616,6 +626,10 @@ export function openActiveTaskRun(input: Readonly<{
           settle(resolution: RunInterventionResolution) {
             signal.removeEventListener("abort", onAbort);
             resolve(resolution);
+          },
+          fail(error: Error) {
+            signal.removeEventListener("abort", onAbort);
+            reject(error);
           },
           drop() {
             signal.removeEventListener("abort", onAbort);
