@@ -990,7 +990,7 @@ A read-only, in-App view of a running manual Automation Task Run's browser page 
 _Avoid_: Assist viewer, screenshot log, headed browser
 
 **Run intervention**:
-A pause of a manual Automation Task Run in which the person controls the run's browser page, for example to close an unexpected dialog, and then hands it back. It begins when the workflow cannot classify the page or when the person presses Take over, never during a Verification Stage, and ends by Hand back, Give up, or five minutes without the person. Scheduled runs have none. Only one is active at a time (ADR 0147).
+A pause of a manual Automation Task Run in which the person controls the run's browser page, for example to close an unexpected dialog, and then hands it back. It begins when a step's wait for an expected page state times out, or at the run's next safe point after the person presses Take over, never during a Verification Stage, and ends by Hand back, Give up, or five minutes without the person. Scheduled runs have none. Only one is active at a time (ADR 0147).
 _Avoid_: Human assistance, Assist, manual resume, Session takeover
 
 **Session takeover**:
