@@ -41,6 +41,7 @@ import {
   type CommitAttemptReport,
 } from "../../lib/automation/commit-attempt.ts";
 import type { BrowserRuntimeIdentity } from "../../lib/automation/server/browser-runtime.ts";
+import { sanitizeRunInterventionLog, type RunInterventionEntry } from "../../lib/automation/run-intervention.ts";
 import { sanitizeTypedWorkflowOutcome } from "../../lib/automation/server/typed-workflow-outcome.ts";
 import type {
   ExchangeRatePersistencePort,
@@ -155,6 +156,14 @@ function recordBrowserRuntimeIdentity(recordJson: string): BrowserRuntimeIdentit
   }
 }
 
+function recordInterventionLog(recordJson: string): RunInterventionEntry[] {
+  try {
+    return sanitizeRunInterventionLog((JSON.parse(recordJson) as { interventionLog?: unknown }).interventionLog);
+  } catch {
+    return [];
+  }
+}
+
 function recordAppWorkflowOutcome(recordJson: string) {
   try {
     const value = JSON.parse(recordJson) as { appWorkflowOutcome?: unknown };
@@ -232,6 +241,7 @@ function assertRunEvent(event: WorkflowRunEvent): void {
 function rowToTaskRun(row: Row): AutomationTaskRun {
   const recordJson = String(row.record_json);
   const browserRuntime = recordBrowserRuntimeIdentity(recordJson);
+  const interventionLog = recordInterventionLog(recordJson);
   return {
     taskRunId: String(row.task_run_id),
     taskId: String(row.task_id),
@@ -249,6 +259,7 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     terminationMode: recordTerminationMode(recordJson),
     humanAssistanceContract: parseHumanAssistanceContract(recordJson),
     ...(browserRuntime ? { browserRuntime } : {}),
+    ...(interventionLog.length ? { interventionLog } : {}),
   };
 }
 
@@ -264,7 +275,7 @@ const CREATE_TASK_RUN_FIELDS = new Set([
 ]);
 const TASK_RUN_UPDATE_FIELDS = new Set([
   "attempt", "maxAttempts", "progress", "terminationMode", "humanAssistanceContract",
-  "appWorkflowOutcome", "browserRuntime",
+  "appWorkflowOutcome", "browserRuntime", "interventionLog",
 ]);
 const TASK_RUN_TRANSITION_FIELDS = new Set([...TASK_RUN_UPDATE_FIELDS, "status", "finishedAt"]);
 
@@ -326,6 +337,9 @@ function sanitizeRun(run: AutomationTaskRun): AutomationTaskRun {
   const browserRuntime = sanitizeBrowserRuntimeIdentity(run.browserRuntime);
   if (browserRuntime) sanitized.browserRuntime = browserRuntime;
   else delete sanitized.browserRuntime;
+  const interventionLog = sanitizeRunInterventionLog(run.interventionLog);
+  if (interventionLog.length) sanitized.interventionLog = interventionLog;
+  else delete sanitized.interventionLog;
   return sanitized;
 }
 

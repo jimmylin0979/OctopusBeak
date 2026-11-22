@@ -39,6 +39,12 @@ import {
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
 import { announceTaskRunFinished } from "./task-run-finished.ts";
+import {
+  runTrigger,
+  type RunInterventionAction,
+  type RunInterventionEntry,
+  type RunTrigger,
+} from "../run-intervention.ts";
 
 export type ActiveTaskRunFields = Pick<
   AutomationTaskRunUpdate,
@@ -143,6 +149,8 @@ export type WorkflowExecutionOptions = Readonly<{
 export type ActiveAutomationTaskRun = Readonly<{
   taskId: string;
   taskRunId: string;
+  /** Who started the run; only a manual run offers a Run live view (ADR 0147). */
+  trigger: RunTrigger;
   /** Start a Workflow execution. Throws while another is current or once the run has finished. */
   beginExecution(executionId: string, options?: WorkflowExecutionOptions): WorkflowExecution;
   /** The execution that has begun and not ended, or null. */
@@ -169,6 +177,12 @@ export type ActiveAutomationTaskRun = Readonly<{
   updateHumanAssistanceContract(contract: HumanAssistanceContractInput): Promise<HumanAssistanceContract>;
   /** Record the current contract's completion. Rejects once the run has finished. */
   updateHumanAssistanceCompletion(status: HumanAssistanceCompletionStatus): Promise<HumanAssistanceContract>;
+  /**
+   * Record on the run's row that the person did this now: the action and its
+   * time only (ADR 0147). Ignored once the run has finished; finishing closes
+   * a view still open in the same terminal write.
+   */
+  recordIntervention(action: RunInterventionAction): Promise<void>;
   /** Durably append one Commit attempt phase and keep it for the run's outcome (ADR 0056). */
   recordCommitAttempt(report: CommitAttemptReport): Promise<void>;
   requestStop(reason: TaskRunStop): Promise<void>;
@@ -236,6 +250,8 @@ async function persistTerminal(
   outcome: TaskRunOutcome,
   attempts: readonly CommitAttempt[],
   dataVersionStore: DataVersionStore,
+  /** The run's intervention log as of its end, when this owner holds one. */
+  interventionLog?: (finishedAt: string) => readonly RunInterventionEntry[],
 ): Promise<AutomationTaskRun> {
   const current = await persistence.taskRunById(taskRunId);
   if (!current) throw new Error(`Missing automation task run: ${taskRunId}`);
@@ -244,6 +260,7 @@ async function persistTerminal(
   const transition = await persistence.transitionTaskRunToTerminal(taskRunId, {
     status: outcome.status,
     finishedAt,
+    ...(interventionLog ? { interventionLog: interventionLog(finishedAt) } : {}),
     appWorkflowOutcome: { errorCode: outcome.errorCode, summary: outcome.summary },
     ...(outcome.status === "completed" ? {
       progress: {
@@ -422,9 +439,16 @@ export function openActiveTaskRun(input: Readonly<{
     return execution;
   };
 
+  // A view still open when the run ends closes at the run's end.
+  const closedInterventionLog = (at: string): readonly RunInterventionEntry[] => {
+    const log = row.interventionLog ?? [];
+    return log.at(-1)?.action === "view-opened" ? [...log, { action: "view-closed", at }] : log;
+  };
+
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
+    trigger: runTrigger(input.run.scheduledAtUtc),
     beginExecution,
     currentExecution: () => currentExecution,
     appendEvent: persistEvent,
@@ -450,6 +474,12 @@ export function openActiveTaskRun(input: Readonly<{
       const recorded = await persistence.updateHumanAssistanceCompletion(taskRunId, status);
       row = { ...row, humanAssistanceContract: recorded };
       return recorded;
+    }),
+    recordIntervention: (action) => serialized(async () => {
+      if (finishing) return;
+      const interventionLog = [...(row.interventionLog ?? []), { action, at: new Date().toISOString() }];
+      await persistence.updateTaskRun(taskRunId, { interventionLog });
+      row = { ...row, interventionLog };
     }),
     recordCommitAttempt(report) {
       const recorded = recording.then(async () => {
@@ -494,6 +524,7 @@ export function openActiveTaskRun(input: Readonly<{
           decide(attempts, report, stop),
           attempts,
           input.dataVersionStore ?? defaultDataVersionStore,
+          closedInterventionLog,
         );
         runtime.upsert(runtimeTaskSnapshotFromRun(row));
         return row;

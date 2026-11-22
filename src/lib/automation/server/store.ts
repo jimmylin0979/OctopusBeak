@@ -13,6 +13,7 @@ import type { CommitAttempt, CommitAttemptReport } from "../commit-attempt.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
+import type { RunInterventionEntry } from "../run-intervention.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -36,6 +37,8 @@ export type AutomationTaskRun = {
   scheduledAtUtc?: string;
   /** Sanitized browser runtime identity, persisted independently of workflow summary. */
   browserRuntime?: BrowserRuntimeIdentity;
+  /** When the person watched the run: actions and times only, never a frame or input (ADR 0147). */
+  interventionLog?: readonly RunInterventionEntry[];
 };
 
 export type AutomationTaskHistoryRow = Pick<
@@ -145,6 +148,7 @@ export type AutomationTaskRunUpdate = Partial<
     | "humanAssistanceContract"
     | "appWorkflowOutcome"
     | "browserRuntime"
+    | "interventionLog"
   >
 >;
 

@@ -4,6 +4,8 @@
   import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
   import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
   import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
+  import RunLiveViewDialog from "$lib/automation/RunLiveViewDialog.svelte";
+  import { runLiveViewAvailable } from "$lib/automation/task-row.ts";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -18,6 +20,7 @@
     CircleCheck,
     CircleEllipsis,
     CloudDownload,
+    Eye,
     Info,
     KeyRound,
     Landmark,
@@ -188,6 +191,16 @@ import type {
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
+  /** The one Run live view open on this page (ADR 0147); opening another replaces it. */
+  let liveView: { taskId: string; runId: string } | null = null;
+  $: liveViewTask = liveView
+    ? live.tasks.find((task) => task.id === liveView?.taskId
+      && task.runId === liveView?.runId && runLiveViewAvailable(task)) ?? null
+    : null;
+
+  function openLiveView(task: AutomationTaskRow) {
+    if (task.runId) liveView = { taskId: task.id, runId: task.runId };
+  }
   let copiedErrorTaskId: string | null = null;
   let copiedErrorTimer: ReturnType<typeof setTimeout> | undefined;
   let runDetailsOverview: OverviewPageDto | null = null;
@@ -1095,6 +1108,18 @@ import type {
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
+                    {#if runLiveViewAvailable(task)}
+                      <button
+                        class="button secondary task-control live-view-action"
+                        type="button"
+                        aria-label={$t.automation.liveView.viewLabel(taskLabel(task, $locale))}
+                        aria-haspopup="dialog"
+                        onclick={() => openLiveView(task)}
+                      >
+                        <Eye size={16} strokeWidth={2.2} aria-hidden="true" />
+                        <span>{$t.automation.liveView.view}</span>
+                      </button>
+                    {/if}
                     {#if task.status === "cancelling" && task.forceTerminateAvailable}
                       <button
                         class="button danger task-control"
@@ -1852,6 +1877,19 @@ import type {
       </div>
     </form>
   </div>
+{/if}
+
+{#if liveView && liveViewTask}
+  {#key liveView.runId}
+    <RunLiveViewDialog
+      port={window.octopusBeak.automation}
+      taskId={liveView.taskId}
+      runId={liveView.runId}
+      taskLabel={taskLabel(liveViewTask, $locale)}
+      step={present(liveViewTask).progressLabel}
+      onClose={() => (liveView = null)}
+    />
+  {/key}
 {/if}
 
 {#if structureReport.open && structureReport.report}

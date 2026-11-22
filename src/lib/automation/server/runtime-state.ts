@@ -8,6 +8,7 @@ import type { AutomationTaskProgress } from "../types.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { assertKnownAutomationRuntimeTasks } from "../runtime-invariants.ts";
 import { sanitizeTypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import { runTrigger } from "../run-intervention.ts";
 
 const RUNTIME_STATUSES = new Set<AutomationRuntimeTaskStatus>([
   "queued",
@@ -89,7 +90,7 @@ function emptyProgress(attempt: number): AutomationTaskProgress {
 }
 
 export function runtimeTaskSnapshotFromRun(
-  run: Pick<AutomationTaskRun, "taskId" | "taskRunId" | "status" | "attempt" | "maxAttempts" | "progress" | "appWorkflowOutcome">,
+  run: Pick<AutomationTaskRun, "taskId" | "taskRunId" | "status" | "attempt" | "maxAttempts" | "progress" | "appWorkflowOutcome" | "scheduledAtUtc">,
   status = run.status as AutomationRuntimeTaskStatus,
 ): AutomationRuntimeTaskSnapshot {
   const baseProgress = run.progress ?? emptyProgress(run.attempt);
@@ -106,6 +107,7 @@ export function runtimeTaskSnapshotFromRun(
     taskId: run.taskId,
     runId: run.taskRunId,
     status,
+    trigger: runTrigger(run.scheduledAtUtc),
     attempt: run.attempt,
     maxAttempts: run.maxAttempts,
     progress,

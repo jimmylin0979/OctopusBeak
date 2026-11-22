@@ -28,10 +28,11 @@ after(() => database.close());
 const provider = createPgliteOperationalProvider(store);
 const persistence = provider.automation;
 
-async function createRun(taskId = "exchange-rates", status: AutomationTaskStatus = "preparing") {
+async function createRun(taskId = "exchange-rates", status: AutomationTaskStatus = "preparing", scheduledAtUtc?: string) {
   const kind = taskId.startsWith("sync-") || taskId === "exchange-rates" ? "sync" : "crawler";
   const { taskRunId } = await persistence.createTaskRun({
     taskId, kind, status, attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
+    ...(scheduledAtUtc ? { scheduledAtUtc } : {}),
   });
   return taskRunId;
 }
@@ -41,8 +42,9 @@ async function open(options: {
   status?: AutomationTaskStatus;
   forceQuitAvailableAfterMs?: number;
   dataVersionStore?: DataVersionStore;
+  scheduledAtUtc?: string;
 } = {}) {
-  const taskRunId = await createRun(options.taskId, options.status);
+  const taskRunId = await createRun(options.taskId, options.status, options.scheduledAtUtc);
   const runtime = createAutomationRuntimeState();
   const row = await persistence.taskRunById(taskRunId);
   const run = openActiveTaskRun({
@@ -724,4 +726,57 @@ test("the App page lookup reaches the page the current execution hosts, and noth
   runs.delete(taskRunId);
   assert.equal(pageForRun(taskRunId), null, "a finished run is no longer active");
   await other.run.finish(ok());
+});
+
+test("the published snapshot says whether a person or the schedule started the run", async () => {
+  const manual = await open({ taskId: "sinopac-statements" });
+  const scheduled = await open({ taskId: "sinopac-statements", scheduledAtUtc: "2026-11-22T01:00:00.000Z" });
+  assert.equal(manual.run.trigger, "manual");
+  assert.equal(scheduled.run.trigger, "scheduled");
+  assert.equal(manual.published()?.trigger, "manual");
+  assert.equal(scheduled.published()?.trigger, "scheduled");
+  await manual.run.transition("running");
+  assert.equal(manual.published()?.trigger, "manual", "later writes keep the trigger");
+  await manual.run.finish(ok());
+  await scheduled.run.finish(ok());
+  assert.equal(manual.published()?.trigger, "manual", "the finished snapshot keeps it too");
+});
+
+test("a run records when the person watched it as metadata only, and its end closes an open view", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  await run.transition("running");
+  await run.recordIntervention("view-opened");
+  await run.recordIntervention("view-closed");
+  await run.recordIntervention("view-opened");
+  const stored = await persistence.taskRunById(taskRunId);
+  assert.deepEqual(stored?.interventionLog?.map((entry) => entry.action), ["view-opened", "view-closed", "view-opened"]);
+  for (const entry of stored?.interventionLog ?? []) {
+    assert.deepEqual(Object.keys(entry).sort(), ["action", "at"], "an entry holds an action and its time, nothing else");
+    assert.equal(new Date(entry.at).toISOString(), entry.at);
+  }
+  assert.deepEqual(stored?.events, [], "watching is not a workflow event, so no stage track or failure stage moves");
+
+  await run.finish(ok());
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["view-opened", "view-closed", "view-opened", "view-closed"]);
+  await run.recordIntervention("view-opened");
+  assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, 4, "a finished run records nothing more");
+});
+
+test("the store keeps only known intervention actions with their times", async () => {
+  const taskRunId = await createRun("sinopac-statements", "running");
+  await persistence.updateTaskRun(taskRunId, {
+    interventionLog: [
+      { action: "view-opened", at: "2026-11-22T01:00:00.000Z" },
+      { action: "view-opened", at: "2026-11-22T01:00:01.000Z", frame: "data:image/jpeg;base64,SECRET" },
+      { action: "typed", at: "2026-11-22T01:00:02.000Z" },
+      { action: "view-closed", at: "not a time" },
+    ] as never,
+  });
+  const stored = await persistence.taskRunById(taskRunId);
+  assert.deepEqual(stored?.interventionLog, [
+    { action: "view-opened", at: "2026-11-22T01:00:00.000Z" },
+    { action: "view-opened", at: "2026-11-22T01:00:01.000Z" },
+  ]);
+  assert.doesNotMatch(stored!.recordJson, /SECRET|typed/u);
 });

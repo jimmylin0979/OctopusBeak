@@ -71,6 +71,8 @@ test("each automation service channel calls its bridge method's namesake with th
   const handlers = automationForwardHandlers(service);
 
   assert.equal(Object.hasOwn(handlers, "automation:selectCertificateFile"), false);
+  assert.equal(Object.hasOwn(handlers, "automation:openLiveView"), false, "a live view's frames go to the window that opened it");
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:closeLiveView"], "closeLiveView");
   await assertForwards(handlers, AUTOMATION_SERVICE_CHANNELS, calls);
 });
 
