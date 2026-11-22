@@ -391,6 +391,9 @@ const en = {
     historyStartedTime: (timezone: string) => `Started (${timezone})`,
     historyFinishedTime: (timezone: string) => `Finished (${timezone})`,
     historyError: "Error",
+    historyStoppedAt: (step: string) => `Stopped at ${step}`,
+    historyStepWaitTimeout: "step wait timed out",
+    historyStoppedPage: (location: string) => `page ${location}`,
     historyLoadFailed: "Run history could not be loaded. Close it and try again.",
     forceQuit: "Force quit",
     statusLabels: {
@@ -786,6 +789,9 @@ const zh: typeof en = {
     historyStartedTime: (timezone) => `開始（${timezone}）`,
     historyFinishedTime: (timezone) => `完成（${timezone}）`,
     historyError: "錯誤",
+    historyStoppedAt: (step) => `停在 ${step}`,
+    historyStepWaitTimeout: "步驟等待逾時",
+    historyStoppedPage: (location) => `頁面 ${location}`,
     historyLoadFailed: "無法載入執行歷史，請關閉後再試一次。",
     forceQuit: "強制結束",
     statusLabels: {

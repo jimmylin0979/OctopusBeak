@@ -14,7 +14,7 @@ import type {
   TypedWorkflowErrorCode,
 } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
+import type { RunStop, WorkflowRunEvent } from "../run-event.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContract,
@@ -56,6 +56,8 @@ export type TaskRunFailure = Readonly<{
   code: Exclude<TypedWorkflowErrorCode, "commit-outcome-unknown">;
   /** False when the code was classified from run events, so a failed Commit attempt explains the run better. */
   proven: boolean;
+  /** Where the workflow stopped, from its failure event (ADR 0147). */
+  stoppedAt?: RunStop;
 }>;
 
 /** What an execution observed, before the run's Commit attempts and stop are applied. */
@@ -70,6 +72,8 @@ export type TaskRunOutcome = Readonly<{
   errorCode: TypedWorkflowErrorCode | null;
   summary: WorkflowRunResult | null;
   forced: boolean;
+  /** Only on a run that failed, never on one that was stopped. */
+  stoppedAt?: RunStop;
 }>;
 
 export type HumanAssistanceResolution = Exclude<HumanAssistanceCompletionStatus, "pending">;
@@ -214,7 +218,13 @@ function decide(
     status: TerminalTaskRunStatus,
     code: TypedWorkflowErrorCode | null,
     forced = false,
-  ): TaskRunOutcome => ({ status, errorCode: code, summary, forced });
+  ): TaskRunOutcome => ({
+    status,
+    errorCode: code,
+    summary,
+    forced,
+    ...(failure?.stoppedAt && code !== null && code !== "cancelled" ? { stoppedAt: failure.stoppedAt } : {}),
+  });
   if (errorCode === "commit-outcome-unknown") return outcome("failed", errorCode);
   if (stop === "forced") return outcome("cancelled", "cancelled", true);
   if (stop === "cancelled") return outcome("cancelled", "cancelled");
@@ -244,7 +254,11 @@ async function persistTerminal(
   const transition = await persistence.transitionTaskRunToTerminal(taskRunId, {
     status: outcome.status,
     finishedAt,
-    appWorkflowOutcome: { errorCode: outcome.errorCode, summary: outcome.summary },
+    appWorkflowOutcome: {
+      errorCode: outcome.errorCode,
+      summary: outcome.summary,
+      ...(outcome.stoppedAt ? { stoppedAt: outcome.stoppedAt } : {}),
+    },
     ...(outcome.status === "completed" ? {
       progress: {
         ...current.progress,

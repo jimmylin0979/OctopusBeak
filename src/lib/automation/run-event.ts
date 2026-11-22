@@ -17,6 +17,22 @@ export const RUN_EVENT_SIGNALS = {
 } as const satisfies Record<string, Readonly<{ stage: WorkflowStage; outcome: RunEventOutcome }>>;
 export type RunEventSignal = keyof typeof RUN_EVENT_SIGNALS;
 
+/**
+ * The page a run stopped on (ADR 0147): a step's wait for an expected page
+ * state timed out, or the page at a URL. Only the URL's host and path are
+ * kept; its query, fragment, path parameters and long digit runs never are.
+ */
+export type RunStopPage =
+  | Readonly<{ kind: "step-wait-timeout"; host?: string; path?: string }>
+  | Readonly<{ kind: "url"; host: string; path: string }>;
+
+/** Where a failed run stopped: the step it was in and the kind of page it was on. No text, image or input. */
+export type RunStop = Readonly<{
+  /** The code of the run's last event before it failed. */
+  step: string;
+  page?: RunStopPage;
+}>;
+
 type RunEventDetail = Readonly<{
   runId: string;
   occurredAt: string;
@@ -25,6 +41,8 @@ type RunEventDetail = Readonly<{
   activity?: WorkflowProgressActivity;
   statementType?: WorkflowProgressStatementType;
   retrying?: boolean;
+  /** Only on a failed event. */
+  stoppedAt?: RunStop;
 }>;
 
 type PlainRunEvent = RunEventDetail & Readonly<{
@@ -59,9 +77,68 @@ export function signalRunEvent<S extends RunEventSignal>(
   return { ...detail, stage, outcome, code: signal, signal } as Extract<SignalRunEvent, { signal: S }>;
 }
 
+const STEP = /^[a-z][a-z0-9-]{0,63}$/u;
+const HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62})(?:\.[a-z0-9](?:[a-z0-9-]{0,62}))*$/u;
+const PATH = /^\/[A-Za-z0-9._~%!$&'()*+,=:@/-]{0,199}$/u;
+const MAX_PATH = 200;
+/** Six or more digits can be an account or card number. */
+const LONG_DIGITS = /\d{6,}/gu;
+
+/** The host and path of a web page's URL, or null for any other page. */
+export function runStopPageLocation(url: string): Readonly<{ host: string; path: string }> | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  const host = parsed.hostname.toLowerCase();
+  if (!HOST.test(host)) return null;
+  const path = parsed.pathname
+    .split("/")
+    .map((segment) => segment.split(";")[0]!.replace(LONG_DIGITS, "*"))
+    .join("/")
+    .replace(/[^A-Za-z0-9._~%!$&'()*+,=:@/-]/gu, "")
+    .slice(0, MAX_PATH);
+  return { host, path: path.startsWith("/") ? path : "/" };
+}
+
+/** The run stop for a failure in `step`, or undefined when the step is not a safe code. */
+export function runStopFor(input: Readonly<{ step: string; timedOut: boolean; url: string | null }>): RunStop | undefined {
+  if (!STEP.test(input.step)) return undefined;
+  const location = input.url === null ? null : runStopPageLocation(input.url);
+  if (input.timedOut) return { step: input.step, page: { kind: "step-wait-timeout", ...location } };
+  return location ? { step: input.step, page: { kind: "url", ...location } } : { step: input.step };
+}
+
+function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isLocationPart(value: unknown, pattern: RegExp): boolean {
+  return typeof value === "string" && pattern.test(value) && !/\d{6,}/u.test(value);
+}
+
+/** Boundary check: a run stop of the fixed shape, whose page keeps only a host and a path. */
+export function isValidRunStop(value: unknown): value is RunStop {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const stop = value as Record<string, unknown>;
+  if (!hasOnlyKeys(stop, ["step", "page"]) || typeof stop.step !== "string" || !STEP.test(stop.step)) return false;
+  if (stop.page === undefined) return true;
+  if (!stop.page || typeof stop.page !== "object" || Array.isArray(stop.page)) return false;
+  const page = stop.page as Record<string, unknown>;
+  if (!hasOnlyKeys(page, ["kind", "host", "path"])) return false;
+  if (page.kind === "url") return isLocationPart(page.host, HOST) && isLocationPart(page.path, PATH);
+  if (page.kind !== "step-wait-timeout") return false;
+  if (page.host === undefined && page.path === undefined) return true;
+  return isLocationPart(page.host, HOST) && isLocationPart(page.path, PATH);
+}
+
 /** Boundary check for the closed outcome and a signal that agrees with its stage, outcome and code. */
 export function hasValidRunEventMeaning(value: Readonly<Record<string, unknown>>): boolean {
   if (typeof value.outcome !== "string" || !OUTCOMES.has(value.outcome)) return false;
+  if (value.stoppedAt !== undefined && (value.outcome !== "failed" || !isValidRunStop(value.stoppedAt))) return false;
   if (value.signal === undefined) return !isRunEventSignal(value.code);
   if (!isRunEventSignal(value.signal)) return false;
   const fixed = RUN_EVENT_SIGNALS[value.signal];

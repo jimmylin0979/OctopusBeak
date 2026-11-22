@@ -17,11 +17,15 @@ import {
   type TypedWorkflowErrorCode,
 } from "../workflow-failures.ts";
 
+import { isValidRunStop, type RunStop } from "../run-event.ts";
+
 export type { TypedWorkflowErrorCode } from "../workflow-failures.ts";
 
 export type TypedWorkflowOutcome = Readonly<{
   errorCode: TypedWorkflowErrorCode | null;
   summary: WorkflowRunResult | null;
+  /** Where a failed run stopped: its step and page kind, never page data (ADR 0147). */
+  stoppedAt?: RunStop;
 }>;
 
 const ERROR_CODES = new Set<TypedWorkflowErrorCode>(TYPED_WORKFLOW_ERROR_CODES);
@@ -97,5 +101,7 @@ export function sanitizeTypedWorkflowOutcome(value: unknown): TypedWorkflowOutco
       : {};
     summary = looseRunResult(source.status, counts, source.products);
   }
-  return { errorCode, summary };
+  // The check admits only the fixed keys, so a valid stop carries nothing else.
+  const stoppedAt = errorCode !== null && isValidRunStop(candidate.stoppedAt) ? candidate.stoppedAt : undefined;
+  return { errorCode, summary, ...(stoppedAt ? { stoppedAt } : {}) };
 }

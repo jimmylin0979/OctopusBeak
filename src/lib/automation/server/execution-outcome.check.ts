@@ -118,6 +118,24 @@ test("a worker's ending becomes a report whose failure is proven only by explici
   }
 });
 
+test("a failure names where the workflow stopped, from its failure event", () => {
+  const stoppedAt = { step: "login-submitted", page: { kind: "url", host: "bank.example", path: "/notice" } } as const;
+  const events: WorkflowRunEvent[] = [
+    event("authentication", "started"),
+    { ...at, stage: "finalization", outcome: "failed", code: "run-failed", stoppedAt },
+  ];
+  assert.deepEqual(reportExecution(workerFailed("authentication-failed"), events).failure, {
+    code: "authentication-failed", proven: true, stoppedAt,
+  });
+  assert.deepEqual(reportExecution({
+    kind: "host-error", error: new Error("worker crashed"), cancelled: false, workerSummary: null,
+  }, events).failure?.stoppedAt, stoppedAt);
+  assert.equal(reportExecution({
+    kind: "host-error", error: new Error("stopped"), cancelled: true, workerSummary: null,
+  }, events).failure?.stoppedAt, undefined);
+  assert.equal(reportExecution(workerFailed("authentication-failed"), authenticationFailed).failure?.stoppedAt, undefined);
+});
+
 test("a worker's summary is reported unchanged", () => {
   const report = reportExecution(workerFailed("workflow-failed", failedProduct), []);
   assert.equal(report.summary, failedProduct);

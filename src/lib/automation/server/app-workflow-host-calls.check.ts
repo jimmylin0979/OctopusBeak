@@ -116,6 +116,27 @@ test("an invalid request, an unknown method, a repeated call id or a method with
   assert.equal(host.replies.length, 1);
 });
 
+test("a failure event reaches the host with its run stop, and a stop holding page data is a protocol failure", async () => {
+  const received: unknown[] = [];
+  const host = dispatcher({ event: async ({ event: recorded }) => { received.push(recorded); } });
+  const failed = { ...event, stage: "finalization", outcome: "failed", code: "run-failed" } as const;
+  const stoppedAt = { step: "login-submitted", page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" } };
+  host.channel.receive(call("event", { event: { ...failed, stoppedAt } }));
+  await settle();
+  assert.deepEqual(received, [{ ...failed, stoppedAt }]);
+  assert.equal(host.failures(), 0);
+
+  for (const refused of [
+    { ...failed, stoppedAt: { ...stoppedAt, page: { kind: "url", host: "bank.example", path: "/login?token=SECRET" } } },
+    { ...failed, stoppedAt: { ...stoppedAt, screenshot: "iVBORw0KGgo=" } },
+    { ...failed, stoppedAt: { ...stoppedAt, page: { ...stoppedAt.page, text: "BALANCE 12,345" } } },
+    { ...event, stoppedAt },
+  ]) host.channel.receive(call("event", { event: refused }));
+  await settle();
+  assert.equal(host.failures(), 4);
+  assert.equal(received.length, 1);
+});
+
 test("a call in a busy lane, or past its method's cap, is a protocol failure", async () => {
   const persisted = deferred();
   const host = dispatcher({ event: () => persisted.promise, commitAttempt: async () => undefined, tdccSession: () => ({ status: "device-registration-required" }) });

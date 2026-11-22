@@ -20,7 +20,9 @@ import type { AutomationTaskStatus } from "./store.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "../run-event.ts";
 import type { AutomationPersistencePort } from "./store.ts";
-import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { collectionNotification } from "./collection-summary.ts";
+import { userActionForFailure } from "../workflow-failures.ts";
+import { createTestPGlite } from"../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
@@ -485,6 +487,55 @@ test("a typed cancellation code ends the run cancelled without force", async () 
   assert.equal(saved.status, "cancelled");
   assert.equal(saved.appWorkflowOutcome?.errorCode, "cancelled");
   assert.equal(saved.terminationMode, undefined);
+});
+
+const stoppedAt = { step: "login-submitted", page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" } } as const;
+
+test("a failed run's outcome keeps where it stopped, and a cancelled run's does not", async () => {
+  const { run, taskRunId } = await open({ taskId: "ctbc-statements", status: "running" });
+  const saved = await run.finish({ summary: null, failure: { code: "authentication-timeout", proven: false, stoppedAt } });
+  assert.equal(saved.status, "failed");
+  assert.deepEqual(saved.appWorkflowOutcome, { errorCode: "authentication-timeout", summary: null, stoppedAt });
+  assert.deepEqual((await persistence.taskRunById(taskRunId))?.appWorkflowOutcome?.stoppedAt, stoppedAt);
+  const history = await persistence.recentTaskRuns(500);
+  assert.deepEqual(history.find((row) => row.taskRunId === taskRunId)?.appWorkflowOutcome?.stoppedAt, stoppedAt, "run history shows it");
+
+  const cancelled = await open({ taskId: "ctbc-statements", status: "running" });
+  await cancelled.run.requestStop("cancelled");
+  const ended = await cancelled.run.finish({ summary: null, failure: { code: "authentication-timeout", proven: false, stoppedAt } });
+  assert.equal(ended.status, "cancelled");
+  assert.equal(ended.appWorkflowOutcome?.stoppedAt, undefined);
+});
+
+test("a scheduled run's User-action Failure carries the step and page kind it stopped on", async () => {
+  // A run is finished the same way whatever started it; only the summary reads the trigger.
+  const { run } = await open({ taskId: "ctbc-statements", status: "running" });
+  const urlStop = { step: "login-submitted", page: { kind: "url", host: "bank.example", path: "/locked" } } as const;
+  const saved = await run.finish({ summary: null, failure: { code: "authentication-failed", proven: true, stoppedAt: urlStop } });
+  assert.equal(userActionForFailure(saved.appWorkflowOutcome?.errorCode), "check-sign-in-details");
+  assert.deepEqual(saved.appWorkflowOutcome?.stoppedAt, urlStop);
+  const notice = collectionNotification([{ taskId: "ctbc-statements", run: saved }], "scheduled", "en");
+  assert.equal(notice?.title, "Automatic sync needs you");
+});
+
+test("no persisted record of a failed run holds page text, a picture, or the URL query", async () => {
+  const { run } = await open({ taskId: "ctbc-statements", status: "running" });
+  const execution = run.beginExecution("execution-privacy");
+  await execution.appendEvent({
+    runId: run.taskRunId, stage: "finalization", outcome: "failed", code: "run-failed",
+    occurredAt: "2026-11-22T00:00:00.000Z", stoppedAt,
+  });
+  execution.end();
+  const leaking = {
+    step: "login-submitted",
+    page: { kind: "url", host: "bank.example", path: "/login?token=SECRET", text: "BALANCE 12,345", screenshot: "iVBORw0KGgo=" },
+  } as unknown as typeof stoppedAt;
+  const saved = await run.finish({ summary: null, failure: { code: "authentication-failed", proven: false, stoppedAt: leaking } });
+  assert.equal(saved.appWorkflowOutcome?.stoppedAt, undefined);
+  assert.deepEqual(saved.events.at(-1)?.stoppedAt, stoppedAt);
+  for (const secret of ["SECRET", "token", "BALANCE", "12,345", "iVBORw0KGgo"]) {
+    assert.equal(saved.recordJson.includes(secret), false, secret);
+  }
 });
 
 test("a completed run can leave the human-assistance waiting state", async () => {

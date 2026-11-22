@@ -133,7 +133,7 @@ function validHumanContract(value: unknown): value is HumanAssistanceContractInp
 
 function validEvent(value: unknown): value is WorkflowRunEvent {
   if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "outcome", "code", "occurredAt"], [
-    "signal", "completed", "total", "activity", "statementType", "retrying",
+    "signal", "completed", "total", "activity", "statementType", "retrying", "stoppedAt",
   ])) return false;
   if (
     typeof value.runId !== "string"

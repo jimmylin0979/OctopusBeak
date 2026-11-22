@@ -1,4 +1,5 @@
 import type { Locale } from "../i18n/i18n.ts";
+import type { RunStop } from "./run-event.ts";
 import { taskLabel, taskLogo } from "./task-display.ts";
 import type { AutomationTaskHistoryRow, AutomationTaskRow } from "./types.ts";
 
@@ -58,6 +59,25 @@ export function visibleHistoryRows(
   return rows.filter((run) =>
     (filter === "all" || historyStatusGroup(run.status) === filter)
     && (!term || historyTaskLabel(tasks, run.taskId, language).toLowerCase().includes(term)));
+}
+
+type RunStopCopy = Readonly<{
+  historyStoppedAt: (step: string) => string;
+  historyStepWaitTimeout: string;
+  historyStoppedPage: (location: string) => string;
+}>;
+
+/** Where a failed run stopped: its step, then whether a step wait timed out, then the page's host and path. */
+export function runStopLabel(stop: RunStop, copy: RunStopCopy): string {
+  const parts = [copy.historyStoppedAt(stop.step)];
+  const location = stop.page?.host === undefined ? null : `${stop.page.host}${stop.page.path ?? ""}`;
+  if (stop.page?.kind === "step-wait-timeout") {
+    parts.push(copy.historyStepWaitTimeout);
+    if (location) parts.push(location);
+  } else if (location) {
+    parts.push(copy.historyStoppedPage(location));
+  }
+  return parts.join(" · ");
 }
 
 export function historyCounts(rows: readonly AutomationTaskHistoryRow[]): RunHistoryCounts {

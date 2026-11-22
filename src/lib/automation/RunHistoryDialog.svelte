@@ -12,6 +12,7 @@
     historyCounts,
     historyTaskLabel,
     historyTaskLogo,
+    runStopLabel,
     visibleHistoryRows,
     type RunHistoryFilter,
     type RunHistoryLoad,
@@ -96,6 +97,9 @@
                   <code>{run.appWorkflowOutcome.errorCode}</code>
                   {#if explanation}
                     <small>{explanation}</small>
+                  {/if}
+                  {#if run.appWorkflowOutcome.stoppedAt}
+                    <small class="history-stop">{runStopLabel(run.appWorkflowOutcome.stoppedAt, $t.automation)}</small>
                   {/if}
                 {:else}--{/if}
               </td>

@@ -30,6 +30,7 @@ import {
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
 import { reportedVerificationPort, type WorkflowVerificationPort } from "./verification-stage.ts";
 import {
+  runStopFor,
   signalRunEvent,
   type RunEventOutcome,
   type RunEventSignal,
@@ -307,6 +308,43 @@ function reportedPreviewWritePort(
   };
 }
 
+const STEP_WAIT_TIMEOUTS = new Set(["TimeoutError", "FrameScopeTimeoutError"]);
+const MAX_CAUSES = 4;
+
+/** Whether a wait for an expected page state timed out, even when the workflow wrapped the timeout. */
+function isStepWaitTimeout(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSES && current instanceof Error; depth += 1) {
+    if (STEP_WAIT_TIMEOUTS.has(current.name)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * The run's browser port, remembering the URL of the page a failure left
+ * while the workflow still held it. Only the URL is read, never the page's
+ * text or a picture, and the page is never visited again to read it.
+ */
+function stopRecordingBrowserPort(browser: WorkflowBrowserPort, signal: AbortSignal) {
+  let stoppedUrl: string | null = null;
+  const port: WorkflowBrowserPort = {
+    withPage: (run) => browser.withPage(async (page) => {
+      stoppedUrl = null;
+      try {
+        return await run(page);
+      } catch (error) {
+        // A stopped run names no page.
+        if (!signal.aborted) {
+          try { stoppedUrl = page.url(); } catch { stoppedUrl = null; }
+        }
+        throw error;
+      }
+    }),
+  };
+  return { port, stoppedUrl: () => stoppedUrl };
+}
+
 /** Common composition point for provider definitions and App-owned ports. */
 export function createWorkflowExecutor(
   definitions: readonly WorkflowDefinition[],
@@ -334,8 +372,12 @@ export function createWorkflowExecutor(
           throw new Error(`${WORKFLOW_CAPABILITIES[capability].label} port is unavailable.`);
         }
       }
+      // The step a failure stopped in is the run's last operation (ADR 0147).
+      let step = "run-started";
+      const browser = stopRecordingBrowserPort(ports.browser, signal);
       const appendEvent = async (runEvent: WorkflowRunEvent): Promise<void> => {
         if (!SAFE_CODE.test(runEvent.code)) throw new Error("Invalid workflow event code.");
+        if (runEvent.stage !== "finalization") step = runEvent.code;
         await ports.events.append(runEvent);
       };
       const stageEvent = (
@@ -410,7 +452,7 @@ export function createWorkflowExecutor(
         runId,
         signal,
         now: ports.now,
-        browser: ports.browser,
+        browser: browser.port,
         text: ports.text,
         verification: reportedVerificationPort({ humanAssistance: ports.humanAssistance, signal, event, signalEvent }),
         ...capabilityPorts,
@@ -437,7 +479,16 @@ export function createWorkflowExecutor(
         throwIfAbortedWithProductResults();
         return result;
       } catch (error) {
-        await event("finalization", signal.aborted ? "advanced" : "failed", signal.aborted ? "run-cancelled" : "run-failed");
+        if (signal.aborted) {
+          await event("finalization", "advanced", "run-cancelled");
+          throw error;
+        }
+        const stoppedAt = runStopFor({
+          step,
+          timedOut: isStepWaitTimeout(error),
+          url: browser.stoppedUrl(),
+        });
+        await report(() => ({ ...stageEvent("finalization", "failed", "run-failed"), ...(stoppedAt ? { stoppedAt } : {}) }));
         throw error;
       }
     },

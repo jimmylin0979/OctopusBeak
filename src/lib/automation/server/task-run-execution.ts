@@ -4,7 +4,7 @@ import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "
 import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import type { WorkflowProgressStatementType } from "../workflow-executor.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
+import type { RunStop, WorkflowRunEvent } from "../run-event.ts";
 import {
   projectWorkflowRunProgress,
   selectedWorkflowStatementTypes,
@@ -100,6 +100,7 @@ async function recordWorkflowFailure(
     errorCode: string;
     stage?: WorkflowRunEvent["stage"];
     statementType?: WorkflowProgressStatementType;
+    stoppedAt?: RunStop;
     error?: unknown;
     safeError?: unknown;
   }>,
@@ -249,6 +250,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
       ...diagnostic,
       errorCode,
       stage: lastOperation(events)?.stage,
+      stoppedAt: result.failure?.stoppedAt,
     });
     recordPreviewFailure(errorCode, events, shapes);
   }

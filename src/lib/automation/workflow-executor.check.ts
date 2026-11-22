@@ -14,6 +14,8 @@ import {
   type WorkflowExecutorPorts,
 } from "./workflow-executor.ts";
 import type { WorkflowRunEvent } from "./run-event.ts";
+import { classifyFailure } from "./failure-classification.ts";
+import type { Page } from "playwright";
 
 function ports(events: WorkflowRunEvent[]): WorkflowExecutorPorts {
   return {
@@ -391,4 +393,142 @@ test("only a workflow that requires product collection receives it, and it fails
     /Product collection is unavailable/,
   );
   assert.equal(called, false);
+});
+
+/** A run's page that holds a balance, a token in its URL, and could hand out a picture. */
+function bankPage(url = "https://bank.example/login;jsessionid=AB12?token=SECRET#frag") {
+  const reads: string[] = [];
+  const page = {
+    url: () => { reads.push("url"); return url; },
+    content: async () => { reads.push("content"); return "<p>BALANCE 12,345</p>"; },
+    screenshot: async () => { reads.push("screenshot"); return Buffer.from("PNGDATA"); },
+  };
+  let entered = 0;
+  return {
+    reads,
+    entered: () => entered,
+    browser: {
+      withPage: async <T>(run: (page: Page) => Promise<T>) => {
+        entered += 1;
+        return await run(page as unknown as Page);
+      },
+    },
+  };
+}
+
+/** A workflow step that fails while it works on the run's page. */
+const failOnPage = (context: { browser: WorkflowExecutorPorts["browser"] }, error: Error) =>
+  context.browser.withPage(async () => { throw error; });
+
+function timeout(): Error {
+  const error = new Error("Timeout 30000ms exceeded waiting for #account-summary");
+  error.name = "TimeoutError";
+  return error;
+}
+
+test("a failed browser run's failure event names the step and the page kind it stopped on", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const page = bankPage();
+  const failing = (error: Error) => createWorkflowExecutor([{
+    id: "bank",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.event("authentication", "started", "login-submitted");
+      await failOnPage(context, error);
+    },
+  }], { ...ports(events), browser: page.browser });
+
+  const thrown = timeout();
+  await assert.rejects(failing(thrown).run("bank", "run-t", null, new AbortController().signal), thrown);
+  assert.deepEqual(events.at(-1)?.stoppedAt, {
+    step: "login-submitted",
+    page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" },
+  });
+  // The run's classification still reads its last operation, not the failure event.
+  assert.equal(classifyFailure({ error: thrown, events, stopped: false }), "authentication-timeout");
+
+  events.length = 0;
+  await assert.rejects(failing(new Error("unexpected page")).run("bank", "run-u", null, new AbortController().signal));
+  assert.deepEqual(events.at(-1)?.stoppedAt, {
+    step: "login-submitted",
+    page: { kind: "url", host: "bank.example", path: "/login" },
+  });
+  // Only the URL is read from the page: never its text or a picture of it, and no second visit to the page.
+  assert.deepEqual([...new Set(page.reads)], ["url"]);
+  assert.equal(page.entered(), 2, "one entry per run");
+});
+
+test("a timeout wrapped by the workflow, or a frame wait timeout, is still a step wait timeout", async () => {
+  for (const error of [
+    new Error("sign-in failed", { cause: timeout() }),
+    Object.assign(new Error("frame not ready"), { name: "FrameScopeTimeoutError" }),
+  ]) {
+    const events: WorkflowRunEvent[] = [];
+    await assert.rejects(createWorkflowExecutor([{
+      id: "bank",
+      requiresFinancialCommit: false,
+      async run(context) { await failOnPage(context, error); },
+    }], { ...ports(events), browser: bankPage().browser }).run("bank", "run-w", null, new AbortController().signal));
+    assert.equal(events.at(-1)?.stoppedAt?.page?.kind, "step-wait-timeout");
+    assert.equal(events.at(-1)?.stoppedAt?.step, "run-started");
+  }
+});
+
+test("a failure off the page still names its step, and a cancelled run names nothing", async () => {
+  const events: WorkflowRunEvent[] = [];
+  await assert.rejects(createWorkflowExecutor([{
+    id: "app-protocol",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.event("collection", "started", "balances-query-started");
+      throw new Error("refused");
+    },
+  }], ports(events)).run("app-protocol", "run-n", null, new AbortController().signal));
+  assert.deepEqual(events.at(-1)?.stoppedAt, { step: "balances-query-started" });
+
+  // A page the workflow already left is not where it stopped.
+  events.length = 0;
+  const left = bankPage();
+  await assert.rejects(createWorkflowExecutor([{
+    id: "bank",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.browser.withPage(async () => undefined);
+      throw new Error("after the page");
+    },
+  }], { ...ports(events), browser: left.browser }).run("bank", "run-l", null, new AbortController().signal));
+  assert.deepEqual(events.at(-1)?.stoppedAt, { step: "run-started" });
+
+  events.length = 0;
+  const page = bankPage();
+  const controller = new AbortController();
+  await assert.rejects(createWorkflowExecutor([{
+    id: "bank",
+    requiresFinancialCommit: false,
+    async run(context) {
+      controller.abort();
+      await failOnPage(context, timeout());
+    },
+  }], { ...ports(events), browser: page.browser }).run("bank", "run-c", null, controller.signal));
+  assert.equal(events.at(-1)?.code, "run-cancelled");
+  assert.equal(events.at(-1)?.stoppedAt, undefined);
+  assert.deepEqual(page.reads, []);
+});
+
+test("no event of a failed run holds the page's text, a picture, or its URL query", async () => {
+  const events: WorkflowRunEvent[] = [];
+  await assert.rejects(createWorkflowExecutor([{
+    id: "bank",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.event("collection", "started", "statement-query-started");
+      await failOnPage(context, timeout());
+    },
+  }], { ...ports(events), browser: bankPage("https://bank.example/acct/0123456789?token=SECRET#frag").browser })
+    .run("bank", "run-p", null, new AbortController().signal));
+  const stored = JSON.stringify(events);
+  for (const secret of ["SECRET", "token", "frag", "BALANCE", "12,345", "PNGDATA", "0123456789", "jsessionid"]) {
+    assert.equal(stored.includes(secret), false, secret);
+  }
+  assert.match(stored, /"path":"\/acct\/\*"/u);
 });

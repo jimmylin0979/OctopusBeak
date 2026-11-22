@@ -55,6 +55,8 @@ function pageWorkflowEvents(
       occurredAt: event.occurredAt,
       ...(event.completed === undefined ? {} : { completed: event.completed as number }),
       ...(event.total === undefined ? {} : { total: event.total as number }),
+      // Checked by hasValidRunEventMeaning: only a failed event's step and page host and path.
+      ...(event.stoppedAt === undefined ? {} : { stoppedAt: event.stoppedAt }),
     } as WorkflowRunEvent];
   }).slice(-MAX_WORKFLOW_EVENTS);
 }
