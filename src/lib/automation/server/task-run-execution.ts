@@ -214,6 +214,9 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
+          // A safe point pauses only a manual run with a Take over waiting (ADR 0147).
+          intervention: async (_request, signal) =>
+            ({ resolution: (await context.run.interventionSafePoint(signal)) ?? "none" }),
           ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
         startWorker,

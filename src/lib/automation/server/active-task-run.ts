@@ -14,7 +14,8 @@ import type {
   TypedWorkflowErrorCode,
 } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
-import type { RunStop, WorkflowRunEvent } from "../run-event.ts";
+import { signalRunEvent, type RunEventSignal, type RunStop, type WorkflowRunEvent } from "../run-event.ts";
+import { INTERVENTION_TIMED_OUT } from "../workflow-failures.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContract,
@@ -40,11 +41,32 @@ import {
 } from "../../shared-shell/data-version.ts";
 import { announceTaskRunFinished } from "./task-run-finished.ts";
 import {
+  MAX_RUN_INTERVENTION_PAUSES,
+  RUN_INTERVENTION_TIMEOUT_MS,
   runTrigger,
   type RunInterventionAction,
   type RunInterventionEntry,
+  type RunInterventionResolution,
+  type RunInterventionState,
   type RunTrigger,
+  type TakeOverRefusal,
+  type TakeOverResult,
 } from "../run-intervention.ts";
+
+/** The timers a paused Run intervention's 5 minutes run on; the global ones by default. */
+export type InterventionTimers = Readonly<{
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}>;
+
+const globalTimers: InterventionTimers = {
+  setTimeout(callback, ms) {
+    const timer = setTimeout(callback, ms);
+    timer.unref?.();
+    return timer;
+  },
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
 
 export type ActiveTaskRunFields = Pick<
   AutomationTaskRunUpdate,
@@ -187,6 +209,26 @@ export type ActiveAutomationTaskRun = Readonly<{
    * a view still open in the same terminal write.
    */
   recordIntervention(action: RunInterventionAction): Promise<void>;
+  /** The run's Run intervention, or null when it has none. */
+  intervention(): RunInterventionState | null;
+  /**
+   * The person pressed Take over (ADR 0147). The request is recorded and the
+   * run pauses at its next safe point. Refused for a scheduled run, while a
+   * Verification Stage is open, while the run is not running, while another
+   * request or pause stands, and once the run has paused as often as it may.
+   */
+  requestTakeOver(): Promise<TakeOverResult>;
+  /**
+   * A workflow safe point, reached through the intervention host call. Null at
+   * once when no Take over is waiting; otherwise the run pauses here until the
+   * person hands back or gives up, or 5 minutes pass. Rejects when `signal`
+   * aborts first.
+   */
+  interventionSafePoint(signal: AbortSignal): Promise<RunInterventionResolution | null>;
+  /** Resume the paused run from its current step. False when nothing is paused. */
+  handBack(): Promise<boolean>;
+  /** End the paused run as a cancel. False when nothing is paused. */
+  giveUp(): Promise<boolean>;
   /** Durably append one Commit attempt phase and keep it for the run's outcome (ADR 0056). */
   recordCommitAttempt(report: CommitAttemptReport): Promise<void>;
   requestStop(reason: TaskRunStop): Promise<void>;
@@ -217,8 +259,17 @@ function decide(
   attempts: readonly CommitAttempt[],
   report: TaskRunReport,
   stop: TaskRunStop | null,
+  /** A paused Run intervention ran out of time, so the person is why the run failed (ADR 0147). */
+  interventionTimedOut = false,
 ): TaskRunOutcome {
-  const { failure, summary } = report;
+  const { summary } = report;
+  const failure: TaskRunFailure | null = interventionTimedOut && report.failure
+    ? {
+      code: INTERVENTION_TIMED_OUT,
+      proven: true,
+      ...(report.failure.stoppedAt ? { stoppedAt: report.failure.stoppedAt } : {}),
+    }
+    : report.failure;
   const commit = commitAttemptsErrorCode(attempts);
   const resetRequired = summary?.products?.some((product) => product.errorCode === "canonical-reset-required");
   const errorCode = commit === "commit-outcome-unknown" || commit === "collection-scope-changed"
@@ -336,8 +387,12 @@ export function openActiveTaskRun(input: Readonly<{
   runtime: RuntimeStatePort;
   forceQuitAvailableAfterMs?: number;
   dataVersionStore?: DataVersionStore;
+  /** The timers a paused intervention's timeout runs on. */
+  interventionTimers?: InterventionTimers;
 }>): ActiveAutomationTaskRun {
   const { persistence, runtime } = input;
+  const trigger = runTrigger(input.run.scheduledAtUtc);
+  const timers = input.interventionTimers ?? globalTimers;
   const taskRunId = input.run.taskRunId;
   const stopController = new AbortController();
   const forceController = new AbortController();
@@ -359,10 +414,18 @@ export function openActiveTaskRun(input: Readonly<{
     return next;
   };
 
+  // The run's Run intervention (ADR 0147): session memory only. The row keeps
+  // the actions and their times, never what the person did on the page.
+  let intervention: RunInterventionState | null = null;
+  let pauses = 0;
+  let interventionTimedOut = false;
+  let pause: Readonly<{ timer: unknown; settle(resolution: RunInterventionResolution): void; drop(): void }> | null = null;
+
   const publish = () => {
     runtime.upsert({
       ...runtimeTaskSnapshotFromRun(row),
       ...(cancellationRequestedAt === null ? {} : { cancellationRequestedAt, forceTerminateAvailable }),
+      ...(intervention === null ? {} : { intervention }),
     });
   };
 
@@ -459,10 +522,37 @@ export function openActiveTaskRun(input: Readonly<{
     return log.at(-1)?.action === "view-opened" ? [...log, { action: "view-closed", at }] : log;
   };
 
+  const recordIntervention = (action: RunInterventionAction) => serialized(async () => {
+    if (finishing) return;
+    const interventionLog = [...(row.interventionLog ?? []), { action, at: new Date().toISOString() }];
+    await persistence.updateTaskRun(taskRunId, { interventionLog });
+    row = { ...row, interventionLog };
+  });
+
+  // Queued in call order behind the run's other writes. A failed write loses
+  // only the record; the intervention itself goes on.
+  const noteIntervention = (action: RunInterventionAction, signal: RunEventSignal): Promise<void> =>
+    Promise.all([
+      recordIntervention(action),
+      persistEvent(signalRunEvent(signal, { runId: taskRunId, occurredAt: new Date().toISOString() })),
+    ]).then(() => undefined, () => console.error("run-intervention-record-failed"));
+
+  const endPause = () => {
+    const ended = pause;
+    if (!ended) return null;
+    timers.clearTimeout(ended.timer);
+    pause = null;
+    intervention = null;
+    if (!finishing) publish();
+    return ended;
+  };
+
+  const refused = (reason: TakeOverRefusal): TakeOverResult => ({ ok: false, refused: reason });
+
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
-    trigger: runTrigger(input.run.scheduledAtUtc),
+    trigger,
     beginExecution,
     currentExecution: () => currentExecution,
     appendEvent: persistEvent,
@@ -489,12 +579,70 @@ export function openActiveTaskRun(input: Readonly<{
       row = { ...row, humanAssistanceContract: recorded };
       return recorded;
     }),
-    recordIntervention: (action) => serialized(async () => {
-      if (finishing) return;
-      const interventionLog = [...(row.interventionLog ?? []), { action, at: new Date().toISOString() }];
-      await persistence.updateTaskRun(taskRunId, { interventionLog });
-      row = { ...row, interventionLog };
-    }),
+    recordIntervention,
+    intervention: () => intervention,
+    async requestTakeOver() {
+      if (trigger !== "manual") return refused("not-manual");
+      if (row.status === "waiting_for_human") return refused("verifying");
+      if (finishing || stop !== null || row.status !== "running") return refused("not-running");
+      if (intervention !== null) return refused("pending");
+      if (pauses >= MAX_RUN_INTERVENTION_PAUSES) return refused("exhausted");
+      intervention = "requested";
+      publish();
+      await noteIntervention("take-over", "run-intervention-requested");
+      return { ok: true };
+    },
+    async interventionSafePoint(signal) {
+      signal.throwIfAborted();
+      // A Verification Stage is never paused: only its solver completes it (ADR 0039).
+      if (intervention !== "requested" || finishing || stop !== null || row.status !== "running") return null;
+      intervention = "paused";
+      pauses += 1;
+      publish();
+      const paused = new Promise<RunInterventionResolution>((resolve, reject) => {
+        const onAbort = () => {
+          if (pause !== current) return;
+          endPause();
+          reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+        };
+        const current = {
+          timer: timers.setTimeout(() => {
+            if (pause !== current) return;
+            interventionTimedOut = true;
+            void noteIntervention("timed-out", "run-intervention-timed-out");
+            endPause();
+            current.settle("timed-out");
+          }, RUN_INTERVENTION_TIMEOUT_MS),
+          settle(resolution: RunInterventionResolution) {
+            signal.removeEventListener("abort", onAbort);
+            resolve(resolution);
+          },
+          drop() {
+            signal.removeEventListener("abort", onAbort);
+          },
+        };
+        pause = current;
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      await noteIntervention("paused", "run-intervention-paused");
+      return await paused;
+    },
+    async handBack() {
+      if (!pause) return false;
+      const noted = noteIntervention("handed-back", "run-intervention-handed-back");
+      endPause()?.settle("handed-back");
+      await noted;
+      return true;
+    },
+    async giveUp() {
+      if (!pause) return false;
+      const noted = noteIntervention("given-up", "run-intervention-given-up");
+      endPause()?.settle("given-up");
+      // Give up behaves as a cancel: the stop abandons the workflow's wait.
+      await run.requestStop("cancelled");
+      await noted;
+      return true;
+    },
     recordCommitAttempt(report) {
       const recorded = recording.then(async () => {
         // A settlement describes a commit that already ran, so it counts even
@@ -514,6 +662,8 @@ export function openActiveTaskRun(input: Readonly<{
         cancellationRequestedAt ??= new Date().toISOString();
         if (reason === "forced") forceTerminateAvailable = true;
       }
+      // A stop withdraws a Take over still waiting for its safe point.
+      if (intervention === "requested") intervention = null;
       if (!stopController.signal.aborted) stopController.abort(reason);
       if (reason === "forced" && !forceController.signal.aborted) forceController.abort(reason);
       if (reason === "cancelled" && forceQuitTimer === undefined && !forceTerminateAvailable) {
@@ -527,15 +677,19 @@ export function openActiveTaskRun(input: Readonly<{
       if (reason === "shutdown") return;
       if (!(await transition("cancelling")) && !finishing) publish();
     },
-    assess: (report) => decide(attempts, report, null),
+    assess: (report) => decide(attempts, report, null, interventionTimedOut),
     finish(report) {
+      if (!finishing) {
+        endPause()?.drop();
+        intervention = null;
+      }
       finishing ??= serialized(async () => {
         if (forceQuitTimer) clearTimeout(forceQuitTimer);
         await recording;
         row = await persistTerminal(
           persistence,
           taskRunId,
-          decide(attempts, report, stop),
+          decide(attempts, report, stop, interventionTimedOut),
           attempts,
           input.dataVersionStore ?? defaultDataVersionStore,
           closedInterventionLog,

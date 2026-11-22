@@ -11,7 +11,8 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { AppWorkflowWorkerHandle, ExecutionHost, WorkerLaunch } from "./execution-host.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import type { WorkflowExecution } from "./active-task-run.ts";
+import { openActiveTaskRun, type WorkflowExecution } from "./active-task-run.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import {
   CHECK_PGLITE_RPC,
   firstRoundForCheck,
@@ -815,6 +816,110 @@ test("an execution logs each worker and host event once, unmoved by the store ca
     const stored = (await provider.automation.taskRunById(taskRunId))!.events;
     assert.equal(stored.length, 200);
     assert.deepEqual(stored.slice(-2).map((event) => event.code), ["earlier-199", "solver-route-unavailable"]);
+  } finally {
+    await store.close();
+  }
+});
+
+/**
+ * A worker at a Source sign-in wait: it consults its safe point every few
+ * milliseconds until an answer other than `none` comes, then ends the way
+ * the workflow would on that answer.
+ */
+class SafePointFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
+  readonly workerData: AppWorkflowWorkerStart;
+  readonly answers: string[] = [];
+  private readonly calls = new ScriptedHostCalls();
+  constructor(workerData: AppWorkflowWorkerStart) {
+    super();
+    this.workerData = workerData;
+    setImmediate(() => {
+      this.emit("online");
+      this.consult();
+    });
+  }
+  private consult() {
+    this.emit("message", this.calls.call("safe-point", "intervention", { at: "safe-point" }));
+  }
+  private end(frame: Record<string, unknown>) {
+    setImmediate(() => {
+      this.emit("message", { protocolVersion: 3, taskRunId: this.workerData.taskRunId, ...frame });
+      this.emit("exit", 0);
+    });
+  }
+  postMessage(frame: AppWorkflowWorkerInboundFrame) {
+    if (frame.kind === "cancel") {
+      this.end({ kind: "cancelled" });
+      return;
+    }
+    if (this.calls.answered(frame) !== "safe-point" || frame.kind !== "reply" || !frame.ok) return;
+    const { resolution } = frame.result as { resolution: string };
+    this.answers.push(resolution);
+    if (resolution === "none") setTimeout(() => this.consult(), 5);
+    else if (resolution === "handed-back") this.end({ kind: "completed", summary: null });
+    else this.end({ kind: "failed", errorCode: "run-intervention-timed-out" });
+  }
+  terminate() {
+    setImmediate(() => this.emit("exit", 1));
+    return Promise.resolve(1);
+  }
+}
+
+async function until(condition: () => boolean, what: string) {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting until ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test("a worker's safe point pauses a manual run through the intervention host call until Hand back, Give up, or 5 minutes", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
+    const scenario = async (end: "hand-back" | "give-up" | "wait-5-minutes") => {
+      const pending = new Set<() => void>();
+      const timers = {
+        setTimeout: (callback: () => void) => { pending.add(callback); return callback; },
+        clearTimeout: (timer: unknown) => { pending.delete(timer as () => void); },
+      };
+      const taskRunId = await createRun(provider, task);
+      const run = openActiveTaskRun({
+        run: (await provider.automation.taskRunById(taskRunId))!,
+        persistence: provider.automation,
+        runtime: createAutomationRuntimeState(),
+        interventionTimers: timers,
+      });
+      let worker: SafePointFakeWorker | undefined;
+      const execute = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) => (worker = new SafePointFakeWorker(start)) }));
+      const reported = execute(plan, run, { attempt: 1, maxAttempts: 1, executionId: "round-1", retrying: false });
+      await until(() => (worker?.answers.length ?? 0) > 0, "the worker consults its safe point");
+      assert.deepEqual(await run.requestTakeOver(), { ok: true });
+      await until(() => run.intervention() === "paused", "the run pauses at the next safe point");
+      if (end === "hand-back") assert.equal(await run.handBack(), true);
+      if (end === "give-up") assert.equal(await run.giveUp(), true);
+      if (end === "wait-5-minutes") for (const fire of [...pending]) fire();
+      const finished = await run.finish(await reported);
+      assert.ok(worker!.answers.slice(0, -1).every((answer) => answer === "none"), "every safe point before the request ran on");
+      return { finished, last: worker!.answers.at(-1) };
+    };
+
+    const handedBack = await scenario("hand-back");
+    assert.equal(handedBack.last, "handed-back");
+    assert.equal(handedBack.finished.status, "completed");
+
+    const givenUp = await scenario("give-up");
+    assert.notEqual(givenUp.last, "given-up", "the stop abandons the pause unanswered");
+    assert.equal(givenUp.finished.status, "cancelled");
+
+    const timedOut = await scenario("wait-5-minutes");
+    assert.equal(timedOut.last, "timed-out");
+    assert.equal(timedOut.finished.status, "failed");
+    assert.equal(timedOut.finished.appWorkflowOutcome?.errorCode, "run-intervention-timed-out");
+    assert.deepEqual(timedOut.finished.interventionLog?.map((entry) => entry.action), ["take-over", "paused", "timed-out"]);
   } finally {
     await store.close();
   }

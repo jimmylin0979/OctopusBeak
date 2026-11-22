@@ -118,6 +118,8 @@ const CLOSE_TIMEOUT_MS = 500;
 const PRE_SUBMIT_PROMPT_MS = 1_500;
 const PROMPT_HIDDEN_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
+/** A sign-in wait consults its Run intervention safe point at most this often (ADR 0147). */
+const SAFE_POINT_MS = 1_000;
 
 /**
  * Sign a browser-driven Verified source in. The step owns the dialog listener
@@ -173,6 +175,7 @@ class Attempt {
   private verdict: Error | undefined;
   private takeovers = 0;
   private restartDeadline: (() => void) | undefined;
+  private consultedAt = Number.NEGATIVE_INFINITY;
   private listening = false;
   /** Dialogs are handled in arrival order, so the first one decides the outcome. */
   private dialogs: Promise<void> = Promise.resolve();
@@ -288,11 +291,29 @@ class Attempt {
         if (plan.prompts && await this.raced(plan.prompts(this.scope))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();
+        // The person changed the page during a Run intervention: check it again from the top with a fresh deadline.
+        if (await this.safePoint()) {
+          deadline = Date.now() + timeoutMs;
+          heldSince = undefined;
+          continue;
+        }
         await this.scope.pause(TICK_MS);
       }
     } finally {
       this.restartDeadline = undefined;
     }
+  }
+
+  /**
+   * A Run intervention safe point (ADR 0147), consulted at most once a
+   * second. True when the run paused here and the person handed it back.
+   * Native dialogs keep their policy meanwhile: the listener stays attached.
+   */
+  private async safePoint(): Promise<boolean> {
+    const intervention = this.context.intervention;
+    if (!intervention || Date.now() - this.consultedAt < SAFE_POINT_MS) return false;
+    this.consultedAt = Date.now();
+    return (await this.raced(intervention.safePoint())) === "handed-back";
   }
 
   /**

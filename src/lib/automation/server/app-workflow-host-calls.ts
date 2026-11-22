@@ -7,6 +7,7 @@ import {
 import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
+import { RUN_INTERVENTION_RESOLUTIONS, type RunInterventionAnswer } from "../run-intervention.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import {
@@ -179,14 +180,34 @@ export type HostCalls = {
     result: TdccSessionLease | TdccSignInLease;
   };
   tdccSessionRotated: { request: Readonly<{ session: TdccIssuedSession }>; result: void };
+  /**
+   * A workflow safe point (ADR 0147). The host answers `none` at once unless
+   * the person pressed Take over; then the run pauses and the call waits until
+   * the intervention resolves. It carries no page data and no targets.
+   */
+  intervention: {
+    request: Readonly<{ at: InterventionPoint }>;
+    result: Readonly<{ resolution: RunInterventionAnswer }>;
+  };
 };
+
+/** Where the workflow consults the host. Only the Source sign-in step's waits do today. */
+export type InterventionPoint = "safe-point";
+const interventionAnswers = new Set<string>(["none", ...RUN_INTERVENTION_RESOLUTIONS]);
+
+/**
+ * The intervention host call's cap bounds how often a run may consult it, not
+ * how often it pauses: a sign-in wait consults about once a second, while the
+ * Active run allows one pause and three more (MAX_RUN_INTERVENTION_PAUSES).
+ */
+export const INTERVENTION_CONSULTS_PER_RUN = 2_048;
 
 export type HostCallMethod = keyof HostCalls;
 export type HostCallRequest<M extends HostCallMethod> = HostCalls[M]["request"];
 export type HostCallResult<M extends HostCallMethod> = HostCalls[M]["result"];
 
 /** Calls in one lane run one at a time; the worker queues them and the host refuses an overlap. */
-export type HostCallLane = "acknowledged" | "assistance" | "tdcc";
+export type HostCallLane = "acknowledged" | "assistance" | "tdcc" | "intervention";
 
 type RequestContract<M extends HostCallMethod> = Readonly<{
   kind: "request";
@@ -269,6 +290,22 @@ export const HOST_CALL_CONTRACTS: Readonly<{ [M in HostCallMethod]: HostCallCont
     parseResult(value, request) {
       if (!(request.operation === "open" ? validTdccSessionLease(value) : validTdccSignInLease(value))) invalid();
       return value as HostCallResult<"tdccSession">;
+    },
+  },
+  intervention: {
+    kind: "request",
+    lane: "intervention",
+    maxPerRun: INTERVENTION_CONSULTS_PER_RUN,
+    // A stop, Give up included, abandons the pause; the workflow stops waiting.
+    duringStop: "drop",
+    parseRequest(value) {
+      if (!isRecord(value) || !exactKeys(value, ["at"]) || value.at !== "safe-point") invalid();
+      return value as HostCallRequest<"intervention">;
+    },
+    parseResult(value) {
+      if (!isRecord(value) || !exactKeys(value, ["resolution"])
+        || typeof value.resolution !== "string" || !interventionAnswers.has(value.resolution)) invalid();
+      return value as HostCallResult<"intervention">;
     },
   },
   tdccSessionRotated: {

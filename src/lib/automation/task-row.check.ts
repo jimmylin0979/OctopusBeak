@@ -173,3 +173,9 @@ test("only a running manual run offers a live view", () => {
     "a run the runtime has not acknowledged offers none",
   );
 });
+
+test("the row carries the run's Run intervention from the runtime, and drops it with the next snapshot that has none", () => {
+  const paused = applyAutomationRuntime(row(), runtime({ status: "running", trigger: "manual", intervention: "paused" }));
+  assert.equal(paused.runIntervention, "paused");
+  assert.equal(applyAutomationRuntime(paused, runtime({ status: "running", trigger: "manual" })).runIntervention, null);
+});

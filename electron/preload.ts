@@ -172,6 +172,10 @@ const INVOKE_CHANNELS = {
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
     openLiveView: "automation:openLiveView",
     closeLiveView: "automation:closeLiveView",
+    takeOverRun: "automation:takeOverRun",
+    handBackRun: "automation:handBackRun",
+    giveUpRun: "automation:giveUpRun",
+    interventionInput: "automation:interventionInput",
   },
   manualAssets: {
     apply: "financial.manualAssets.apply",

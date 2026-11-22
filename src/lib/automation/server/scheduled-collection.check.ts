@@ -34,6 +34,7 @@ const expectedUserActions: Record<TypedWorkflowErrorCode, UserAction | null> = {
   "canonical-reset-required": "delete-financial-data",
   "commit-outcome-unknown": null,
   "collection-scope-changed": null,
+  "run-intervention-timed-out": "attend-paused-run",
   "workflow-failed": null,
 };
 

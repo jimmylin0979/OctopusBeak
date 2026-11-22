@@ -68,6 +68,43 @@ test("every request contract names a lane and a cap, and only acknowledgements a
   assert.equal(HOST_CALL_CONTRACTS.commitAttempt.kind === "request" && HOST_CALL_CONTRACTS.commitAttempt.duringStop, "answer");
 });
 
+test("the intervention host call has its own lane, a bound on safe-point consults, and a stop abandons it", async () => {
+  const contract = HOST_CALL_CONTRACTS.intervention;
+  assert.equal(contract.kind, "request");
+  if (contract.kind !== "request") return;
+  assert.equal(contract.lane, "intervention");
+  assert.equal(contract.duringStop, "drop");
+  assert.equal(contract.failureCode, undefined, "a failed intervention is a protocol failure, never a typed answer");
+  // A Source sign-in wait consults it at most once a second for its 120 s
+  // deadline, restarted once after a takeover and after each of four pauses.
+  assert.ok(contract.maxPerRun >= 120 * 6 && Number.isFinite(contract.maxPerRun));
+
+  assert.deepEqual(contract.parseRequest({ at: "safe-point" }), { at: "safe-point" });
+  for (const invalid of [{}, { at: "anywhere" }, { at: "safe-point", text: "typed" }, null]) {
+    assert.throws(() => contract.parseRequest(invalid), `${JSON.stringify(invalid)} is refused`);
+  }
+  for (const resolution of ["none", "handed-back", "given-up", "timed-out"]) {
+    assert.deepEqual(contract.parseResult({ resolution }, { at: "safe-point" }), { resolution });
+  }
+  assert.throws(() => contract.parseResult({ resolution: "entered" }, { at: "safe-point" }));
+  assert.throws(() => contract.parseResult({ resolution: "none", input: "x" }, { at: "safe-point" }));
+
+  const waiting = deferred<{ resolution: "handed-back" }>();
+  const host = dispatcher({ intervention: () => waiting.promise, event: () => undefined });
+  host.channel.receive(call("intervention", { at: "safe-point" }));
+  await settle();
+  assert.equal(host.channel.idle(), false);
+  host.channel.receive(call("event", { event }));
+  await settle();
+  assert.equal(host.replies.length, 1, "events still flow beside a pause");
+  host.stop();
+  waiting.resolve({ resolution: "handed-back" });
+  await settle();
+  assert.equal(host.replies.length, 1, "a stop abandons the pause unanswered");
+  assert.equal(host.channel.idle(), true);
+  assert.equal(host.failures(), 0);
+});
+
 test("an event is answered only after its handler resolves", async () => {
   const persisted = deferred();
   const host = dispatcher({ event: () => persisted.promise });

@@ -1887,6 +1887,8 @@ import type {
       runId={liveView.runId}
       taskLabel={taskLabel(liveViewTask, $locale)}
       step={present(liveViewTask).progressLabel}
+      intervention={liveViewTask.runIntervention ?? null}
+      verifying={liveViewTask.status === "waiting_for_human"}
       onClose={() => (liveView = null)}
     />
   {/key}

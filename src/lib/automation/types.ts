@@ -2,7 +2,7 @@ import type { HumanAssistanceContract } from "./human-assistance.ts";
 import type { WorkflowRunEvent } from "./run-event.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 import type { TakeoverPrompt } from "./sign-in-prompt.ts";
-import type { RunTrigger } from "./run-intervention.ts";
+import type { RunInterventionState, RunTrigger } from "./run-intervention.ts";
 export type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 
 /**
@@ -217,6 +217,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   forceTerminateAvailable?: boolean;
   /** Who started the run this row shows, when known (ADR 0147). */
   runTrigger?: RunTrigger | null;
+  /** The run's Run intervention while it has one (ADR 0147). */
+  runIntervention?: RunInterventionState | null;
   isActive: boolean;
   ranToday: boolean;
   /** Every credential the task needs has been read and is present. */

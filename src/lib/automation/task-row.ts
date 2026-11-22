@@ -161,6 +161,7 @@ export function applyAutomationRuntime(
     appWorkflowOutcome: runtime.appWorkflowOutcome,
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
     runTrigger: runtime.trigger ?? null,
+    runIntervention: runtime.intervention ?? null,
     progressPercent,
     ...automationTaskRowActions(status, isActive, row.credentialsReady),
   };

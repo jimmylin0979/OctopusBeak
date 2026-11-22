@@ -793,6 +793,49 @@ test("a sign-in that never settles throws the step's deadline error, a Playwrigh
     assert.equal(listeners(page), 0);
   }));
 
+test("the sign-in wait is a Run intervention safe point: it pauses there and re-checks the page with a fresh deadline after Hand back", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    let consults = 0;
+    // The second consult finds a Take over: the person fixes the page for longer than the deadline, then hands back.
+    const context = {
+      ...run.context,
+      intervention: {
+        async safePoint() {
+          consults += 1;
+          if (consults !== 2) return "none" as const;
+          await delay(1_200);
+          await page.evaluate("show()");
+          return "handed-back" as const;
+        },
+      },
+    };
+    // The second consult comes about 1 s in; the pause outlasts the 1.5 s deadline.
+    const signedIn = await signIn(context, page, source(), form(calls(), { timeoutMs: 1_500 }));
+    assert.deepEqual(signedIn, { usedExistingSession: false });
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, DONE], "a pause is not a sign-in event");
+    assert.ok(consults >= 2);
+  }));
+
+test("the sign-in wait consults its safe point about once a second, not on every poll", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    let consults = 0;
+    const context = { ...run.context, intervention: { safePoint: async () => { consults += 1; return "none" as const; } } };
+    const error = await failure(signIn(context, page, source(), form(calls(), { timeoutMs: 2_100 })));
+    assert.ok(error instanceof SignInDeadlineError);
+    assert.ok(consults >= 2 && consults <= 4, `${consults} consults in about 2 s`);
+  }));
+
+test("an intervention that ends the run at a safe point ends the sign-in with its error", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    const timedOut = new FailureCodeError("run-intervention-timed-out");
+    const context = { ...run.context, intervention: { safePoint: () => Promise.reject(timedOut) } };
+    assert.equal(await failure(signIn(context, page, source(), form(calls(), { timeoutMs: 5_000 }))), timedOut);
+    assert.equal(listeners(page), 0);
+  }));
+
 test("the settle window runs only when the plan has prompts, and an acting prompt restarts it", async () => {
   await withPage("show()", async (page) => {
     const run = fakeRun(page);

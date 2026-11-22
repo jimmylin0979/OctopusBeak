@@ -135,7 +135,13 @@ export function normalizeHumanVerificationInput(
   return input;
 }
 
-export function normalizeViewerInput(raw: unknown): ViewerInput {
+/** One printable character, which a Run intervention may press beside the named keys (ADR 0147). */
+const PRINTABLE_KEY = /^[^\p{C}]$/u;
+
+export function normalizeViewerInput(
+  raw: unknown,
+  options: Readonly<{ printableKeys?: boolean }> = {},
+): ViewerInput {
   if (!raw || typeof raw !== "object") throw new Error(unsupportedInputError);
   const input = raw as Record<string, unknown>;
   if (input.type === "click") return { type: "click", x: pixel(input.x), y: pixel(input.y) };
@@ -156,7 +162,11 @@ export function normalizeViewerInput(raw: unknown): ViewerInput {
   ) {
     return { type: "type", text: input.text };
   }
-  if (input.type === "press" && typeof input.key === "string" && allowedPressKeys.has(input.key)) {
+  if (
+    input.type === "press" &&
+    typeof input.key === "string" &&
+    (allowedPressKeys.has(input.key) || (options.printableKeys === true && PRINTABLE_KEY.test(input.key)))
+  ) {
     return { type: "press", key: input.key };
   }
   throw new Error(unsupportedInputError);

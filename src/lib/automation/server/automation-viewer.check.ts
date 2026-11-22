@@ -51,6 +51,17 @@ assert.throws(() => normalizeViewerInput({ type: "type", text: "x".repeat(129) }
 assert.throws(() => normalizeViewerInput({ type: "press", key: "" }));
 assert.throws(() => normalizeViewerInput({ type: "press", key: "Meta+R" }));
 
+// A Run intervention also presses one printable character; nothing else widens (ADR 0147).
+assert.throws(() => normalizeViewerInput({ type: "press", key: "a" }), "printable keys are opt-in");
+for (const key of ["a", "Z", "7", "@", " ", "中"]) {
+  assert.deepEqual(normalizeViewerInput({ type: "press", key }, { printableKeys: true }), { type: "press", key });
+}
+for (const key of ["ab", "\u0001", "\n", "Meta+R", "F5", ""]) {
+  assert.throws(() => normalizeViewerInput({ type: "press", key }, { printableKeys: true }), `${JSON.stringify(key)} is refused`);
+}
+assert.deepEqual(normalizeViewerInput({ type: "press", key: "Enter" }, { printableKeys: true }), { type: "press", key: "Enter" });
+assert.throws(() => normalizeViewerInput({ type: "type", text: "x".repeat(129) }, { printableKeys: true }));
+
 const humanContract: HumanAssistanceContract = {
   schemaVersion: 1,
   version: 3,

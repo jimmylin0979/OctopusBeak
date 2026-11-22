@@ -111,7 +111,7 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   }>;
   structureReports: Readonly<{ get(taskId: string): PreviewStructureReport | null }>;
   /** The Run live view over this runtime's Active runs (ADR 0147). */
-  liveView: Pick<RunLiveView, "open" | "close" | "closeAll">;
+  liveView: Pick<RunLiveView, "open" | "close" | "closeAll" | "takeOver" | "handBack" | "giveUp" | "input">;
   notificationTarget: Readonly<{ take(): NotificationTarget | null }>;
   /** Receives the sources of a sync the person started, once they have all ended. */
   onManualCollectionFinished?: (results: CollectionResult[]) => void;
@@ -419,6 +419,12 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     openLiveView: (sink: RunLiveViewSink, taskId: unknown, runId: unknown) =>
       deps.liveView.open(liveViewArgument(taskId, "task"), liveViewArgument(runId, "run"), sink),
     closeLiveView: (viewId: unknown) => deps.liveView.close(liveViewArgument(viewId, "id")),
+    // Run intervention (ADR 0147): each acts on the open view's run, and the
+    // view refuses input unless that run is paused for the person.
+    takeOverRun: (viewId: unknown) => deps.liveView.takeOver(liveViewArgument(viewId, "id")),
+    handBackRun: (viewId: unknown) => deps.liveView.handBack(liveViewArgument(viewId, "id")),
+    giveUpRun: (viewId: unknown) => deps.liveView.giveUp(liveViewArgument(viewId, "id")),
+    interventionInput: (viewId: unknown, input: unknown) => deps.liveView.input(liveViewArgument(viewId, "id"), input),
     async openExternalPrerequisite(prerequisiteId: string) {
       const prerequisite = externalPrerequisiteById(prerequisiteId);
       if (!prerequisite)

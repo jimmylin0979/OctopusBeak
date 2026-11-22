@@ -27,10 +27,67 @@ export type RunLiveViewEnd = Readonly<{ viewId: string; reason: RunLiveViewEndRe
  * person's input are session-memory only (ADR 0147); an entry holds the action
  * and its time and nothing else.
  */
-export const RUN_INTERVENTION_ACTIONS = ["view-opened", "view-closed"] as const;
+export const RUN_INTERVENTION_ACTIONS = [
+  "view-opened",
+  "view-closed",
+  /** The person pressed Take over; the run pauses at its next safe point. */
+  "take-over",
+  /** The run reached a safe point and the person controls the page. */
+  "paused",
+  "handed-back",
+  "given-up",
+  /** Five minutes paused without the person. */
+  "timed-out",
+] as const;
 export type RunInterventionAction = typeof RUN_INTERVENTION_ACTIONS[number];
 
 export type RunInterventionEntry = Readonly<{ action: RunInterventionAction; at: string }>;
+
+/**
+ * Where a run's intervention stands: Take over was pressed and the run has not
+ * reached a safe point yet, or the run is paused and the person controls the
+ * page. A run with neither has no intervention.
+ */
+export type RunInterventionState = "requested" | "paused";
+
+/** How a paused intervention ended, as the workflow waiting at its safe point hears it. */
+export const RUN_INTERVENTION_RESOLUTIONS = ["handed-back", "given-up", "timed-out"] as const;
+export type RunInterventionResolution = typeof RUN_INTERVENTION_RESOLUTIONS[number];
+
+/** The host's answer at a safe point; `none`: no Take over is waiting, so the workflow runs on. */
+export type RunInterventionAnswer = "none" | RunInterventionResolution;
+
+/** Why Take over was refused. */
+export type TakeOverRefusal =
+  /** A scheduled run never waits for a person. */
+  | "not-manual"
+  /** A Verification Stage is open; only the solver completes it (ADR 0039). */
+  | "verifying"
+  /** The run is not running, such as one still preparing, cancelling or finished. */
+  | "not-running"
+  /** A Take over is already waiting for its safe point, or the run is paused. */
+  | "pending"
+  /** The run has already paused as often as it may. */
+  | "exhausted";
+
+export type TakeOverResult = Readonly<{ ok: true }> | Readonly<{ ok: false; refused: TakeOverRefusal }>;
+
+/**
+ * One pointer or key action the renderer sends while the run is paused, in
+ * the page's CSS pixels. The host normalizes it again with the viewer input
+ * rules; it is never stored or logged.
+ */
+export type RunInterventionInput =
+  | Readonly<{ type: "click"; x: number; y: number }>
+  | Readonly<{ type: "drag"; x: number; y: number; toX: number; toY: number }>
+  | Readonly<{ type: "type"; text: string }>
+  | Readonly<{ type: "press"; key: string }>;
+
+/** A run pauses once, then at most three more times (ADR 0147). */
+export const MAX_RUN_INTERVENTION_PAUSES = 4;
+
+/** A paused run ends with a User-action Failure after this long without the person. */
+export const RUN_INTERVENTION_TIMEOUT_MS = 5 * 60_000;
 
 /** A run keeps this many entries at most, the most recent ones. */
 export const MAX_RUN_INTERVENTION_ENTRIES = 64;

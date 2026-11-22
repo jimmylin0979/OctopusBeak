@@ -14,6 +14,14 @@ export const RUN_EVENT_SIGNALS = {
   "solver-challenge-unsupported": { stage: "authentication", outcome: "failed" },
   "login-dialog-interrupted": { stage: "authentication", outcome: "failed" },
   "human-assistance-failed": { stage: "authentication", outcome: "failed" },
+  // Run intervention (ADR 0147). The host records these on the run, never in a
+  // Workflow execution's log, so none of them classifies a failure. The safe
+  // points are the Source sign-in step's waits, so they report its stage.
+  "run-intervention-requested": { stage: "authentication", outcome: "advanced" },
+  "run-intervention-paused": { stage: "authentication", outcome: "advanced" },
+  "run-intervention-handed-back": { stage: "authentication", outcome: "advanced" },
+  "run-intervention-given-up": { stage: "authentication", outcome: "advanced" },
+  "run-intervention-timed-out": { stage: "authentication", outcome: "failed" },
 } as const satisfies Record<string, Readonly<{ stage: WorkflowStage; outcome: RunEventOutcome }>>;
 export type RunEventSignal = keyof typeof RUN_EVENT_SIGNALS;
 

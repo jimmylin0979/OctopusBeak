@@ -271,7 +271,9 @@ test("only a running manual run with a page can be watched", async () => {
   await pageless.finish({ summary: null, failure: null });
 });
 
-test("the view sends no input to the page and offers no way to", async () => {
+const SCREENCAST_CALLS = ["Page.startScreencast", "Page.screencastFrameAck", "Page.stopScreencast"];
+
+test("a watching view sends no input to the page: only screencast calls reach it", async () => {
   const run = await openRun();
   const { liveView, pages } = liveViewOver(run);
   const { sink } = recordingSink();
@@ -280,16 +282,117 @@ test("the view sends no input to the page and offers no way to", async () => {
   const [session] = pages.get(run.taskRunId)!.sessions;
   session!.paint("frame");
   await tick();
+  await assert.rejects(liveView.input(viewId, { type: "click", x: 10, y: 10 }), /not paused/u);
   await liveView.close(viewId);
 
-  assert.deepEqual(Object.keys(liveView).sort(), ["close", "closeAll", "open"]);
-  for (const method of methods(session!)) {
-    assert.ok(
-      ["Page.startScreencast", "Page.screencastFrameAck", "Page.stopScreencast"].includes(method),
-      `${method} is not a screencast call`,
-    );
-  }
+  for (const method of methods(session!)) assert.ok(SCREENCAST_CALLS.includes(method), `${method} is not a screencast call`);
   await run.finish({ summary: null, failure: null });
+});
+
+const inputCalls = (session: FakeCdp) => session.sent.filter(([method]) => !SCREENCAST_CALLS.includes(method));
+
+test("input reaches the page only while the run is paused for the person, normalized by the viewer input rules", async () => {
+  const run = await openRun();
+  const { liveView, pages } = liveViewOver(run);
+  const { sink } = recordingSink();
+  const { viewId } = await liveView.open(run.taskId, run.taskRunId, sink);
+  const [session] = pages.get(run.taskRunId)!.sessions;
+  const click = { type: "click", x: 40.4, y: 20.6 };
+
+  assert.deepEqual(await liveView.takeOver(viewId), { ok: true });
+  await assert.rejects(liveView.input(viewId, click), /not paused/u, "waiting for the current step, input is refused");
+  assert.deepEqual(inputCalls(session!), []);
+
+  const paused = run.interventionSafePoint(run.signal);
+  await tick();
+  await liveView.input(viewId, click);
+  await liveView.input(viewId, { type: "type", text: "hello" });
+  await liveView.input(viewId, { type: "press", key: "Escape" });
+  await liveView.input(viewId, { type: "press", key: "x" });
+  await assert.rejects(liveView.input(viewId, { type: "press", key: "Meta+R" }), /Unsupported viewer input/u);
+  await assert.rejects(liveView.input(viewId, { type: "click", x: -5, y: 0 }), /Unsupported viewer input/u);
+  await assert.rejects(liveView.input("another-view", click), /not open/u);
+  assert.deepEqual(inputCalls(session!), [
+    ["Input.dispatchMouseEvent", { type: "mouseMoved", x: 40, y: 21 }],
+    ["Input.dispatchMouseEvent", { type: "mousePressed", x: 40, y: 21, button: "left", clickCount: 1 }],
+    ["Input.dispatchMouseEvent", { type: "mouseReleased", x: 40, y: 21, button: "left", clickCount: 1 }],
+    ["Input.insertText", { text: "hello" }],
+    ["Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }],
+    ["Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }],
+    ["Input.dispatchKeyEvent", { type: "keyDown", key: "x", text: "x" }],
+    ["Input.dispatchKeyEvent", { type: "keyUp", key: "x" }],
+  ]);
+
+  assert.equal(await liveView.handBack(viewId), true);
+  assert.equal(await paused, "handed-back");
+  await assert.rejects(liveView.input(viewId, click), /not paused/u, "after Hand back, input is refused again");
+  assert.equal(inputCalls(session!).length, 8);
+  await liveView.closeAll();
+  await run.finish({ summary: null, failure: null });
+});
+
+test("the view's Take over is refused while verifying, and Give up ends the paused run as a cancel", async () => {
+  const run = await openRun();
+  const { liveView } = liveViewOver(run);
+  const { sink, ends } = recordingSink();
+  const { viewId } = await liveView.open(run.taskId, run.taskRunId, sink);
+
+  await run.transition("waiting_for_human");
+  assert.deepEqual(await liveView.takeOver(viewId), { ok: false, refused: "verifying" });
+  await run.transition("running");
+  await assert.rejects(liveView.takeOver("another-view"), /not open/u);
+  assert.equal(await liveView.giveUp(viewId), false, "nothing is paused to give up");
+
+  await liveView.takeOver(viewId);
+  const paused = run.interventionSafePoint(run.signal);
+  await tick();
+  assert.equal(await liveView.giveUp(viewId), true);
+  assert.equal(await paused, "given-up");
+  assert.equal(run.stopReason(), "cancelled");
+  await run.finish({ summary: null, failure: { code: "cancelled", proven: true } });
+  await tick();
+  assert.deepEqual(ends.map((end) => end.reason), ["run-ended"]);
+  await liveView.closeAll();
+});
+
+test("nothing the person types during an intervention reaches persistence or a log", async () => {
+  const sentinel = "SENTINELPASSWORD-hunter2";
+  const logged: string[] = [];
+  const originals = { log: console.log, info: console.info, warn: console.warn, error: console.error, debug: console.debug };
+  for (const level of Object.keys(originals) as Array<keyof typeof originals>) {
+    console[level] = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+  }
+  persisted.length = 0;
+  try {
+    const run = await openRun();
+    const { liveView, pages } = liveViewOver(run);
+    const { sink } = recordingSink();
+    const { viewId } = await liveView.open(run.taskId, run.taskRunId, sink);
+    await liveView.takeOver(viewId);
+    const paused = run.interventionSafePoint(run.signal);
+    await tick();
+    await liveView.input(viewId, { type: "type", text: sentinel });
+    await liveView.input(viewId, { type: "press", key: "S" }).catch(() => undefined);
+    await liveView.input(viewId, { type: "type", text: `${sentinel}${"x".repeat(200)}` }).catch(() => undefined);
+    await liveView.handBack(viewId);
+    await paused;
+    await liveView.close(viewId);
+    await run.finish({ summary: null, failure: null });
+
+    assert.deepEqual(inputCalls(pages.get(run.taskRunId)!.sessions[0]!)[0], ["Input.insertText", { text: sentinel }], "the input reached the page");
+    const stored = await persistence.taskRunById(run.taskRunId);
+    assert.deepEqual(stored?.interventionLog?.map((entry) => entry.action), [
+      "view-opened", "take-over", "paused", "handed-back", "view-closed",
+    ]);
+    for (const entry of stored?.interventionLog ?? []) assert.deepEqual(Object.keys(entry).sort(), ["action", "at"]);
+    for (const event of stored?.events ?? []) assert.equal(event.stoppedAt, undefined);
+    for (const write of persisted) assert.ok(!write.includes(sentinel), "no persistence call carries the input");
+    assert.ok(!stored!.recordJson.includes(sentinel));
+    assert.ok(!JSON.stringify(stored!.events).includes(sentinel));
+    for (const line of logged) assert.ok(!line.includes(sentinel), "no log line carries the input");
+  } finally {
+    Object.assign(console, originals);
+  }
 });
 
 test("frames live only in memory: no persisted record or log holds one", async () => {

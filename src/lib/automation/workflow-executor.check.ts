@@ -532,3 +532,38 @@ test("no event of a failed run holds the page's text, a picture, or its URL quer
   }
   assert.match(stored, /"path":"\/acct\/\*"/u);
 });
+
+test("a safe point runs on or resumes after Hand back, and an intervention that timed out fails the run as a User-action Failure", async () => {
+  const answers = ["none", "handed-back", "timed-out"] as const;
+  const seen: string[] = [];
+  const events: WorkflowRunEvent[] = [];
+  let consults = 0;
+  const executor = createWorkflowExecutor([{
+    id: "browser-example",
+    requiresFinancialCommit: false,
+    async run(context) {
+      assert.ok(context.intervention);
+      seen.push(await context.intervention.safePoint());
+      seen.push(await context.intervention.safePoint());
+      await context.intervention.safePoint();
+      seen.push("unreachable");
+    },
+  }], { ...ports(events), intervention: { consult: async () => answers[consults++]! } });
+  const error = await executor.run("browser-example", "run-safe", null, new AbortController().signal).catch((thrown: unknown) => thrown);
+  assert.deepEqual(seen, ["none", "handed-back"]);
+  assert.ok(error instanceof FailureCodeError);
+  assert.equal(error.errorCode, "run-intervention-timed-out");
+  assert.equal(classifyFailure({ error, events, stopped: false }), "run-intervention-timed-out");
+  assert.equal(events.at(-1)?.code, "run-failed");
+
+  let consulted = false;
+  const without = createWorkflowExecutor([{
+    id: "browser-example",
+    requiresFinancialCommit: false,
+    async run(context) {
+      consulted = context.intervention !== undefined;
+    },
+  }], ports([]));
+  await without.run("browser-example", "run-none", null, new AbortController().signal);
+  assert.equal(consulted, false, "outside the App no person can take over");
+});

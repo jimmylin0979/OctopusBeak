@@ -39,12 +39,38 @@ async function createRun(taskId = "exchange-rates", status: AutomationTaskStatus
   return taskRunId;
 }
 
+/** Timers that fire only when the check advances them, so a 5-minute wait takes no time. */
+function fakeTimers() {
+  let now = 0;
+  const pending = new Set<{ at: number; callback: () => void }>();
+  return {
+    setTimeout(callback: () => void, ms: number) {
+      const timer = { at: now + ms, callback };
+      pending.add(timer);
+      return timer;
+    },
+    clearTimeout(timer: unknown) {
+      pending.delete(timer as { at: number; callback: () => void });
+    },
+    advance(ms: number) {
+      now += ms;
+      for (const timer of [...pending]) {
+        if (timer.at > now) continue;
+        pending.delete(timer);
+        timer.callback();
+      }
+    },
+    pending: () => pending.size,
+  };
+}
+
 async function open(options: {
   taskId?: string;
   status?: AutomationTaskStatus;
   forceQuitAvailableAfterMs?: number;
   dataVersionStore?: DataVersionStore;
   scheduledAtUtc?: string;
+  timers?: ReturnType<typeof fakeTimers>;
 } = {}) {
   const taskRunId = await createRun(options.taskId, options.status, options.scheduledAtUtc);
   const runtime = createAutomationRuntimeState();
@@ -55,6 +81,7 @@ async function open(options: {
     runtime,
     dataVersionStore: options.dataVersionStore ?? createDataVersionStore(),
     ...(options.forceQuitAvailableAfterMs === undefined ? {} : { forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs }),
+    ...(options.timers ? { interventionTimers: options.timers } : {}),
   });
   const published = () => runtime.snapshot().tasks.find((task) => task.runId === taskRunId);
   return { run, runtime, published, taskRunId };
@@ -830,4 +857,165 @@ test("the store keeps only known intervention actions with their times", async (
     { action: "view-opened", at: "2026-11-22T01:00:01.000Z" },
   ]);
   assert.doesNotMatch(stored!.recordJson, /SECRET|typed/u);
+});
+
+// Run intervention (ADR 0147). A fake workflow execution consults the run at
+// its safe points the way the intervention host call does; the page is a token.
+const interventionActions = async (taskRunId: string) =>
+  (await persistence.taskRunById(taskRunId))?.interventionLog?.map((entry) => entry.action) ?? [];
+const storedSignals = async (taskRunId: string) =>
+  (await persistence.taskRunById(taskRunId))?.events.map((event) => event.signal ?? event.code) ?? [];
+
+async function runningManual(timers = fakeTimers()) {
+  const opened = await open({ taskId: "sinopac-statements", timers });
+  await opened.run.transition("running");
+  const execution = opened.run.beginExecution("round-1");
+  execution.hostPage({ page: { name: "page" } as never });
+  return { ...opened, execution, timers };
+}
+
+/** Settles to the value, or "unsettled" when it has not settled once pending work has run. */
+async function settledOrNot<T>(promise: Promise<T>): Promise<T | "unsettled"> {
+  return await Promise.race([promise, new Promise<"unsettled">((resolve) => setImmediate(() => resolve("unsettled")))]);
+}
+
+test("Take over pauses a manual run only at its next safe point, and Hand back resumes it", async () => {
+  const { run, taskRunId, execution, published } = await runningManual();
+  const signal = new AbortController().signal;
+  assert.equal(await run.interventionSafePoint(signal), null, "a safe point with no request does not pause");
+  assert.equal(run.intervention(), null);
+
+  assert.deepEqual(await run.requestTakeOver(), { ok: true });
+  assert.equal(run.intervention(), "requested", "the request waits for a safe point");
+  assert.equal(published()?.intervention, "requested");
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "pending" });
+
+  const paused = run.interventionSafePoint(signal);
+  assert.equal(await settledOrNot(paused), "unsettled", "the workflow waits at the safe point");
+  assert.equal(run.intervention(), "paused");
+  assert.equal(published()?.intervention, "paused");
+  assert.equal(run.current().status, "running", "a paused run keeps its browser and stays active");
+
+  assert.equal(await run.handBack(), true);
+  assert.equal(await paused, "handed-back");
+  assert.equal(run.intervention(), null);
+  assert.equal(published()?.intervention, undefined);
+  assert.equal(await run.handBack(), false, "nothing is paused any more");
+  assert.equal(await run.interventionSafePoint(signal), null, "the next safe point runs on");
+
+  assert.deepEqual(await interventionActions(taskRunId), ["take-over", "paused", "handed-back"]);
+  assert.deepEqual(await storedSignals(taskRunId), [
+    "run-intervention-requested", "run-intervention-paused", "run-intervention-handed-back",
+  ]);
+  assert.deepEqual(execution.events(), [], "intervention signals join no execution's log, so no classification reads them");
+  execution.end();
+  await run.finish(ok());
+  assert.equal((await persistence.taskRunById(taskRunId))?.status, "completed");
+});
+
+test("Give up ends a paused run as a cancel", async () => {
+  const { run, taskRunId, execution, timers } = await runningManual();
+  await run.requestTakeOver();
+  const paused = run.interventionSafePoint(run.signal);
+  await settledOrNot(paused);
+  assert.equal(await run.giveUp(), true);
+  // The stop abandons the workflow's wait, as the host call's stop rule does.
+  assert.equal(await paused, "given-up");
+  assert.equal(run.stopReason(), "cancelled");
+  assert.equal(run.signal.aborted, true);
+  assert.equal(run.intervention(), null);
+  assert.equal(timers.pending(), 0, "the 5 minutes stop with the pause");
+  execution.end();
+  await run.finish(fail("cancelled"));
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.equal(finished?.status, "cancelled");
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["take-over", "paused", "given-up"]);
+  assert.equal(await run.giveUp(), false);
+});
+
+test("five minutes paused without the person ends the run with a User-action Failure and releases the page", async () => {
+  const { run, taskRunId, execution, timers, published } = await runningManual();
+  const pageForRun = activeRunPageLookup((id) => (id === taskRunId ? run : null));
+  await run.requestTakeOver();
+  const paused = run.interventionSafePoint(run.signal);
+  await settledOrNot(paused);
+  timers.advance(5 * 60_000 - 1);
+  assert.equal(await settledOrNot(paused), "unsettled", "the person still has a moment");
+  assert.equal(run.intervention(), "paused");
+  timers.advance(1);
+  assert.equal(await paused, "timed-out");
+  assert.equal(run.intervention(), null);
+  assert.equal(published()?.intervention, undefined);
+  assert.equal(await run.handBack(), false, "a late Hand back finds nothing paused");
+
+  // The workflow hears timed-out and ends, which closes the page it hosted;
+  // whatever code it reports, the run failed because no one came.
+  execution.end();
+  assert.equal(pageForRun(taskRunId), null, "the source's browser page is released");
+  await run.finish(fail("workflow-failed", null, false));
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.equal(finished?.status, "failed");
+  assert.equal(finished?.appWorkflowOutcome?.errorCode, "run-intervention-timed-out");
+  assert.equal(userActionForFailure(finished?.appWorkflowOutcome?.errorCode), "attend-paused-run");
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["take-over", "paused", "timed-out"]);
+  assert.deepEqual(await storedSignals(taskRunId), [
+    "run-intervention-requested", "run-intervention-paused", "run-intervention-timed-out",
+  ]);
+});
+
+test("a stop while paused ends the pause and the workflow's wait", async () => {
+  const { run, execution, timers } = await runningManual();
+  await run.requestTakeOver();
+  const paused = run.interventionSafePoint(run.signal);
+  await settledOrNot(paused);
+  await run.requestStop("cancelled");
+  await assert.rejects(paused);
+  assert.equal(run.intervention(), null);
+  assert.equal(timers.pending(), 0);
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "not-running" });
+  execution.end();
+  await run.finish(fail("cancelled"));
+});
+
+test("Take over is refused for a scheduled run, during a Verification Stage, and when the run is not running", async () => {
+  const scheduled = await open({ taskId: "sinopac-statements", scheduledAtUtc: "2026-11-22T01:00:00.000Z" });
+  await scheduled.run.transition("running");
+  assert.deepEqual(await scheduled.run.requestTakeOver(), { ok: false, refused: "not-manual" });
+  assert.equal(await scheduled.run.interventionSafePoint(scheduled.run.signal), null);
+  await scheduled.run.finish(ok());
+  assert.deepEqual(await interventionActions(scheduled.taskRunId), [], "a refusal records nothing");
+
+  const preparing = await open({ taskId: "sinopac-statements" });
+  assert.deepEqual(await preparing.run.requestTakeOver(), { ok: false, refused: "not-running" });
+
+  const { run, taskRunId, execution } = await runningManual();
+  await run.transition("waiting_for_human");
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "verifying" });
+  await run.transition("running");
+  assert.deepEqual(await run.requestTakeOver(), { ok: true });
+  // The request stands, but a safe point inside a Verification Stage never pauses it.
+  await run.transition("waiting_for_human");
+  assert.equal(await run.interventionSafePoint(run.signal), null);
+  assert.equal(run.intervention(), "requested");
+  await run.transition("running");
+  execution.end();
+  await run.finish(ok());
+  assert.equal(run.intervention(), null, "finishing withdraws a request still waiting");
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "not-running" });
+  assert.deepEqual(await interventionActions(taskRunId), ["take-over"]);
+  await preparing.run.finish(ok());
+});
+
+test("a run pauses once and then at most three more times", async () => {
+  const { run, execution } = await runningManual();
+  for (let pause = 0; pause < 4; pause += 1) {
+    assert.deepEqual(await run.requestTakeOver(), { ok: true });
+    const paused = run.interventionSafePoint(run.signal);
+    await settledOrNot(paused);
+    await run.handBack();
+    assert.equal(await paused, "handed-back");
+  }
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "exhausted" });
+  execution.end();
+  await run.finish(ok());
 });

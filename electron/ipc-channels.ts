@@ -98,6 +98,10 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
   "automation:closeLiveView": "closeLiveView",
+  "automation:takeOverRun": "takeOverRun",
+  "automation:handBackRun": "handBackRun",
+  "automation:giveUpRun": "giveUpRun",
+  "automation:interventionInput": "interventionInput",
   "settings:clearSignInData": "clearSignInData",
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };

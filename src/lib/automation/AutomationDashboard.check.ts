@@ -392,6 +392,9 @@ assert.match(
   "the dialog closes once its run stops running or another run replaces it",
 );
 assert.match(source, /step=\{present\(liveViewTask\)\.progressLabel\}/u, "the dialog names the run's current step as its card does");
+// The dialog's Take over, waiting and controlling states follow the runtime's report of the run.
+assert.match(source, /intervention=\{liveViewTask\.runIntervention \?\? null\}/u);
+assert.match(source, /verifying=\{liveViewTask\.status === "waiting_for_human"\}/u, "Take over is unavailable while verifying");
 
 assert.match(
   source,
