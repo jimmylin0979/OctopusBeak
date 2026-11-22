@@ -133,7 +133,7 @@ const CREATE_TASK_RUN_FIELDS = [
 ] as const;
 const TASK_RUN_UPDATE_FIELDS = [
   "attempt", "maxAttempts", "progress", "terminationMode", "humanAssistanceContract",
-  "appWorkflowOutcome", "browserRuntime",
+  "appWorkflowOutcome", "browserRuntime", "interventionLog",
 ] as const;
 const TASK_RUN_TRANSITION_FIELDS = [...TASK_RUN_UPDATE_FIELDS, "status", "finishedAt"] as const;
 

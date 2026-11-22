@@ -59,6 +59,12 @@ import {
 } from "../../shared-shell/data-version.ts";
 import { projectAutomationBlock } from "./automation-block.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
+import type { RunLiveView, RunLiveViewSink } from "./run-live-view.ts";
+
+function liveViewArgument(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value || value.length > 128) throw new TypeError(`Live view ${name} is invalid.`);
+  return value;
+}
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
@@ -104,6 +110,8 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
     cancelAll(): Promise<unknown>;
   }>;
   structureReports: Readonly<{ get(taskId: string): PreviewStructureReport | null }>;
+  /** The Run live view over this runtime's Active runs (ADR 0147). */
+  liveView: Pick<RunLiveView, "open" | "close" | "closeAll">;
   notificationTarget: Readonly<{ take(): NotificationTarget | null }>;
   /** Receives the sources of a sync the person started, once they have all ended. */
   onManualCollectionFinished?: (results: CollectionResult[]) => void;
@@ -407,6 +415,10 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       await deps.openExternal(previewStructureReportIssueUrl(source));
       return { ok: true as const };
     },
+    /** The IPC adapter makes the sink from the window that asked, so frames reach no other window. */
+    openLiveView: (sink: RunLiveViewSink, taskId: unknown, runId: unknown) =>
+      deps.liveView.open(liveViewArgument(taskId, "task"), liveViewArgument(runId, "run"), sink),
+    closeLiveView: (viewId: unknown) => deps.liveView.close(liveViewArgument(viewId, "id")),
     async openExternalPrerequisite(prerequisiteId: string) {
       const prerequisite = externalPrerequisiteById(prerequisiteId);
       if (!prerequisite)
@@ -442,9 +454,10 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       const model = await runtime.desktopModel();
       return runManyResult(await runManual(scheduledCollectionTaskIds(model.automation)));
     },
-    /** Stops publishing runtime changes. */
+    /** Stops publishing runtime changes and closes any Run live view. */
     close() {
       unsubscribeFromRuntime();
+      void deps.liveView.closeAll();
     },
   });
 }

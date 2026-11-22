@@ -41,6 +41,15 @@ assert.match(
   source,
   /"automation:selectCertificateFile": \(event, locale\) =>\s*automation\.selectCertificateFile\(BrowserWindow\.fromWebContents\(event\.sender\), locale\)/,
 );
+// ADR 0147: a Run live view's frames go only to the window that opened it, through the sender check.
+assert.match(
+  source,
+  /"automation:openLiveView": \(event, taskId, runId\) =>\s*automation\.openLiveView\(liveViewSink\(event\.sender\), taskId, runId\)/,
+);
+assert.doesNotMatch(source, /broadcast\("automation:live-view/, "frames never reach every window");
+assert.match(source, /sender\.send\("automation:live-view-frame" satisfies OctopusBeakLiveViewChannel, frame\)/);
+assert.match(source, /sender\.send\("automation:live-view-ended" satisfies OctopusBeakLiveViewChannel, end\)/);
+assert.doesNotMatch(source, /console\.[a-z]+\([^)]*frame/u, "no frame is logged");
 assert.doesNotMatch(serviceSource, /from "electron"/, "the desktop service reaches Electron only through its ports");
 for (const service of ["settings/server/settings-desktop-service.ts", "spending/server/spending-desktop-service.ts"]) {
   assert.doesNotMatch(

@@ -55,10 +55,12 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "automation:block",
   "automation:cancel",
   "automation:cancelDeviceRegistration",
+  "automation:closeLiveView",
   "automation:deviceRegistrationStatus",
   "automation:fatalRuntimeSnapshot",
   "automation:forceTerminate",
   "automation:openExternalPrerequisite",
+  "automation:openLiveView",
   "automation:openPreviewStructureReportIssue",
   "automation:openSetupGuideLink",
   "automation:previewStructureReport",
@@ -124,14 +126,27 @@ const data = api.data as Record<string, (listener: () => void) => () => void>;
 const appUpdates = api.appUpdates as Record<string, (listener: () => void) => () => void>;
 automation.onRuntimeChanged!(() => {});
 automation.onNotificationTargetRequested!(() => {});
+automation.onLiveViewFrame!(() => {});
+automation.onLiveViewEnded!(() => {});
 data.onInvalidated!(() => {});
 appUpdates.onChanged!(() => {});
 assert.deepEqual(recorded.listened, [
   "automation:runtime-changed",
   "automation:notification-target-requested",
+  "automation:live-view-frame",
+  "automation:live-view-ended",
   "data:invalidated",
   "appUpdates:changed",
 ]);
+// The Run live view is read-only (ADR 0147): the bridge can open, close and hear a view, nothing more.
+assert.deepEqual(
+  Object.keys(api.automation!).filter((method) => /live ?view/iu.test(method)).sort(),
+  ["closeLiveView", "onLiveViewEnded", "onLiveViewFrame", "openLiveView"],
+);
+assert.ok(
+  !Object.keys(api.automation!).some((method) => /input|pointer|key|viewer/iu.test(method)),
+  "no bridge method sends input to a run's page",
+);
 
 const dataViews = api.dataViews as { enabled(): Promise<unknown>; subscribe(...args: unknown[]): Promise<unknown> };
 recorded.invoked.length = 0;
