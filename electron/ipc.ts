@@ -2,7 +2,6 @@ import {
   BrowserWindow,
   ipcMain,
   type IpcMainInvokeEvent,
-  type WebContents,
 } from "electron";
 import {
   automationForwardHandlers,
@@ -13,8 +12,8 @@ import {
   type SettingsServiceForwards,
   type SpendingServiceForwards,
 } from "./ipc-channels.ts";
-import type { OctopusBeakDataViewChannels, OctopusBeakLiveViewChannel, OctopusBeakSendChannel } from "./preload.ts";
-import type { RunLiveViewSink } from "../src/lib/automation/server/run-live-view.ts";
+import type { OctopusBeakDataViewChannels, OctopusBeakSendChannel } from "./preload.ts";
+import { liveViewSink } from "./live-view-sink.ts";
 import { broadcast } from "./broadcast.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
 import {
@@ -34,15 +33,6 @@ import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import { trustedIpcMain } from "./ipc-sender.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
-
-/** A Run live view's frames reach only the window that opened it (ADR 0147). */
-function liveViewSink(sender: WebContents): RunLiveViewSink {
-  return {
-    frame: (frame) => sender.send("automation:live-view-frame" satisfies OctopusBeakLiveViewChannel, frame),
-    ended: (end) => sender.send("automation:live-view-ended" satisfies OctopusBeakLiveViewChannel, end),
-    gone: () => sender.isDestroyed(),
-  };
-}
 
 export function registerOctopusBeakIpc({
   automation,

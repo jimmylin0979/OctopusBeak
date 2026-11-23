@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { errors, type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
@@ -80,6 +81,16 @@ async function withEsun(
     await page.close();
   }
 }
+
+// ADR 0039, 0147: only E.SUN's first 15 s deadline is a verdict that must not pause; the 60 s one after a takeover may.
+test("E.SUN's plan opts out of a deadline pause for the first deadline only", () => {
+  const source = readFileSync(new URL("./esun-credit-card-statements.ts", import.meta.url), "utf8");
+  const plan = source.slice(source.indexOf("function esunSignInPlan"), source.indexOf("const timelineResponseSchema"));
+  assert.match(plan, /timeoutMs: 15_000/u);
+  assert.match(plan, /takeoverTimeoutMs: 60_000/u);
+  assert.match(plan, /deadlineIntervention: "after-takeover"/u);
+  assert.doesNotMatch(plan, /deadlineIntervention: false/u);
+});
 
 const read = <T>(page: Page, name: string) => page.evaluate((key) => (window as unknown as Record<string, T>)[key], name);
 const signInEsun = (run: ReturnType<typeof recordedRun>, page: Page) => authenticateEsunPage(page, CREDENTIALS, run.context);

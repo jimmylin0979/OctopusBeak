@@ -249,6 +249,67 @@ test("a view whose window is gone stops at the next frame", async () => {
   await run.finish({ summary: null, failure: null });
 });
 
+test("a sink that throws while the view ends still stops the screencast, detaches and records the close", async () => {
+  const run = await openRun();
+  const { liveView, pages } = liveViewOver(run);
+  await liveView.open(run.taskId, run.taskRunId, {
+    frame: () => {},
+    ended: () => { throw new Error("sender destroyed"); },
+  });
+  await liveView.closeAll();
+  const [session] = pages.get(run.taskRunId)!.sessions;
+
+  assert.equal(methods(session!).includes("Page.stopScreencast"), true);
+  assert.equal(session!.detached, true);
+  const stored = await persistence.taskRunById(run.taskRunId);
+  assert.deepEqual(stored?.interventionLog?.map((entry) => entry.action), ["view-opened", "view-closed"]);
+  await run.finish({ summary: null, failure: null });
+});
+
+test("a failed send of a frame ends the view instead of streaming into the void", async () => {
+  const run = await openRun();
+  const { liveView, pages } = liveViewOver(run);
+  const ends: RunLiveViewEnd[] = [];
+  const { viewId } = await liveView.open(run.taskId, run.taskRunId, {
+    frame: () => { throw new Error("render frame disposed"); },
+    ended: (end) => ends.push(end),
+  });
+  const [session] = pages.get(run.taskRunId)!.sessions;
+  session!.paint("lost");
+  await tick();
+
+  assert.deepEqual(ends, [{ viewId, reason: "closed" }]);
+  assert.equal(session!.detached, true);
+  await liveView.closeAll();
+  await run.finish({ summary: null, failure: null });
+});
+
+test("a window that goes away or reloads ends the view even when no frame follows", async () => {
+  const run = await openRun();
+  const { liveView, pages } = liveViewOver(run);
+  const goneListeners = new Set<() => void>();
+  const ends: RunLiveViewEnd[] = [];
+  const { viewId } = await liveView.open(run.taskId, run.taskRunId, {
+    frame: () => {},
+    ended: (end) => ends.push(end),
+    onGone: (listener) => {
+      goneListeners.add(listener);
+      return () => goneListeners.delete(listener);
+    },
+  });
+  assert.equal(goneListeners.size, 1);
+  for (const listener of goneListeners) listener();
+  await tick();
+  await tick();
+
+  assert.deepEqual(ends, [{ viewId, reason: "closed" }]);
+  assert.equal(pages.get(run.taskRunId)!.sessions[0]!.detached, true);
+  assert.equal(goneListeners.size, 0, "the view stops listening once it ends");
+  const stored = await persistence.taskRunById(run.taskRunId);
+  assert.deepEqual(stored?.interventionLog?.map((entry) => entry.action), ["view-opened", "view-closed"]);
+  await run.finish({ summary: null, failure: null });
+});
+
 test("only a running manual run with a page can be watched", async () => {
   const scheduled = await openRun({ scheduledAtUtc: "2026-11-22T01:00:00.000Z" });
   const pageless = await openRun();

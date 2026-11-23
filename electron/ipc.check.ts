@@ -47,9 +47,11 @@ assert.match(
   /"automation:openLiveView": \(event, taskId, runId\) =>\s*automation\.openLiveView\(liveViewSink\(event\.sender\), taskId, runId\)/,
 );
 assert.doesNotMatch(source, /broadcast\("automation:live-view/, "frames never reach every window");
-assert.match(source, /sender\.send\("automation:live-view-frame" satisfies OctopusBeakLiveViewChannel, frame\)/);
-assert.match(source, /sender\.send\("automation:live-view-ended" satisfies OctopusBeakLiveViewChannel, end\)/);
-assert.doesNotMatch(source, /console\.[a-z]+\([^)]*frame/u, "no frame is logged");
+const sinkSource = readFileSync(new URL("./live-view-sink.ts", import.meta.url), "utf8");
+assert.match(source, /import \{ liveViewSink \} from "\.\/live-view-sink\.ts"/);
+assert.match(sinkSource, /sender\.send\("automation:live-view-frame" satisfies OctopusBeakLiveViewChannel, frame\)/);
+assert.match(sinkSource, /sender\.send\("automation:live-view-ended" satisfies OctopusBeakLiveViewChannel, end\)/);
+assert.doesNotMatch(source + sinkSource, /console\.[a-z]+\([^)]*frame/u, "no frame is logged");
 assert.doesNotMatch(serviceSource, /from "electron"/, "the desktop service reaches Electron only through its ports");
 for (const service of ["settings/server/settings-desktop-service.ts", "spending/server/spending-desktop-service.ts"]) {
   assert.doesNotMatch(

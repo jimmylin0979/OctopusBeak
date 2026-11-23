@@ -22,6 +22,7 @@ import { signalRunEvent, type WorkflowRunEvent } from "../run-event.ts";
 import type { AutomationPersistencePort } from "./store.ts";
 import { collectionNotification } from "./collection-summary.ts";
 import { userActionForFailure } from "../workflow-failures.ts";
+import { MAX_RUN_INTERVENTION_ENTRIES } from "../run-intervention.ts";
 import { createRunInterventionQueue, type RunInterventionQueue } from "./run-intervention-queue.ts";
 import { createTestPGlite } from"../../../ledger/pglite/baseline-test-template.ts";
 
@@ -844,6 +845,31 @@ test("a run records when the person watched it as metadata only, and its end clo
   assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, 4, "a finished run records nothing more");
 });
 
+test("a run that ends with a view open records the close even when other entries follow the open", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  await run.transition("running");
+  await run.recordIntervention("view-opened");
+  await run.recordIntervention("take-over");
+  await run.recordIntervention("paused");
+  await run.finish(ok());
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["view-opened", "take-over", "paused", "view-closed"]);
+});
+
+test("a run keeps only the most recent intervention entries, in memory and in the store", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  await run.transition("running");
+  const cap = MAX_RUN_INTERVENTION_ENTRIES;
+  for (let index = 0; index < cap + 10; index += 1) {
+    await run.recordIntervention(index % 2 === 0 ? "view-opened" : "view-closed");
+  }
+  assert.equal(run.current().interventionLog?.length, cap);
+  assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, cap);
+  await run.recordIntervention("view-opened");
+  await run.finish(ok());
+  assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, cap, "the closing entry respects the bound too");
+});
+
 test("the store keeps only known intervention actions with their times", async () => {
   const taskRunId = await createRun("sinopac-statements", "running");
   await persistence.updateTaskRun(taskRunId, {
@@ -976,6 +1002,35 @@ test("a stop while paused ends the pause and the workflow's wait", async () => {
   assert.equal(run.intervention(), null);
   assert.equal(timers.pending(), 0);
   assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "not-running" });
+  execution.end();
+  await run.finish(fail("cancelled"));
+});
+
+test("cancelling while the pause is being recorded raises no unhandled rejection", async () => {
+  const { run, execution } = await runningManual();
+  await run.requestTakeOver();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  // A write that takes a few turns, as a real store's does.
+  const updateTaskRun = persistence.updateTaskRun;
+  persistence.updateTaskRun = async (...args) => {
+    for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    return await updateTaskRun.apply(persistence, args);
+  };
+  try {
+    const controller = new AbortController();
+    const paused = run.interventionSafePoint(controller.signal);
+    // The pause is reached; its record is still being written when the signal aborts.
+    controller.abort(new Error("cancelled mid-write"));
+    await assert.rejects(paused, /cancelled mid-write/u);
+    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    persistence.updateTaskRun = updateTaskRun;
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, []);
+  assert.equal(run.intervention(), null);
   execution.end();
   await run.finish(fail("cancelled"));
 });

@@ -41,6 +41,7 @@ import {
 } from "../../shared-shell/data-version.ts";
 import { announceTaskRunFinished } from "./task-run-finished.ts";
 import {
+  MAX_RUN_INTERVENTION_ENTRIES,
   MAX_RUN_INTERVENTION_PAUSES,
   RUN_INTERVENTION_TIMEOUT_MS,
   runTrigger,
@@ -542,12 +543,17 @@ export function openActiveTaskRun(input: Readonly<{
   // A view still open when the run ends closes at the run's end.
   const closedInterventionLog = (at: string): readonly RunInterventionEntry[] => {
     const log = row.interventionLog ?? [];
-    return log.at(-1)?.action === "view-opened" ? [...log, { action: "view-closed", at }] : log;
+    // Take over and pause entries can follow the open, so the view's state is its last view entry.
+    const lastView = log.findLast((entry) => entry.action === "view-opened" || entry.action === "view-closed");
+    return lastView?.action === "view-opened" ? boundedInterventionLog([...log, { action: "view-closed", at }]) : log;
   };
+
+  const boundedInterventionLog = (log: readonly RunInterventionEntry[]): readonly RunInterventionEntry[] =>
+    log.slice(-MAX_RUN_INTERVENTION_ENTRIES);
 
   const recordIntervention = (action: RunInterventionAction) => serialized(async () => {
     if (finishing) return;
-    const interventionLog = [...(row.interventionLog ?? []), { action, at: new Date().toISOString() }];
+    const interventionLog = boundedInterventionLog([...(row.interventionLog ?? []), { action, at: new Date().toISOString() }]);
     await persistence.updateTaskRun(taskRunId, { interventionLog });
     row = { ...row, interventionLog };
   });
@@ -678,6 +684,9 @@ export function openActiveTaskRun(input: Readonly<{
         reached = current;
         signal.addEventListener("abort", onAbort, { once: true });
       });
+      // The pause can fail (cancel, execution end) while its record is still being
+      // written, before the await below; that failure is the caller's to see, not an unhandled one.
+      paused.catch(() => undefined);
       // Only one Run intervention is active at a time: behind another, the run
       // waits for you with its browser kept, and its 5 minutes start on its turn.
       const turn = interventionQueue.enter(taskRunId, () => {

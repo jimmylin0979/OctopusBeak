@@ -65,9 +65,11 @@ export type FormPlan = Readonly<{
    * Whether a manual run pauses in a Run intervention when the deadline
    * expires (ADR 0147). Default true. False for a source whose plan reads the
    * deadline itself as a verdict, such as a verification wall only the solver
-   * may pass (ADR 0039).
+   * may pass (ADR 0039). "after-takeover" opts out only for the first
+   * deadline: once a session takeover restarted it, the restarted deadline
+   * pauses like any other.
    */
-  deadlineIntervention?: boolean;
+  deadlineIntervention?: boolean | "after-takeover";
 }>;
 
 /** A source whose sign-in flow stays its own; the step owns only the bracket, the dialogs and cancellation. */
@@ -337,6 +339,7 @@ class Attempt {
   private async deadlineExpired(plan: FormPlan): Promise<boolean> {
     const intervention = this.context.intervention;
     if (!intervention || plan.deadlineIntervention === false) return false;
+    if (plan.deadlineIntervention === "after-takeover" && this.takeovers === 0) return false;
     const handedBack = (await this.raced(intervention.deadlineExpired())) === "handed-back";
     // The pause stands in for a safe-point consult: the next one is a second away.
     this.consultedAt = Date.now();
