@@ -315,6 +315,45 @@ test("Cathay all workflow collects and commits selected products independently w
   }
 });
 
+test("Cathay collection waits are the run's Run intervention safe points (ADR 0147)", async () => {
+  // The domestic overview renders its account buttons only later, so its wait polls the safe point.
+  const rendered: string[] = [];
+  const page = cathayOverviewPage(signedInHome, { ...OVERVIEWS, domestic: { ...OVERVIEWS.domestic!, uiAccounts: rendered } });
+  const harness = contextHarness(resultFor, page);
+  const consulted: string[] = [];
+  const intervention = {
+    safePoint: async () => {
+      consulted.push("safe-point");
+      rendered.splice(0, rendered.length, DOMESTIC_ACCOUNT);
+      return "none" as const;
+    },
+    deadlineExpired: async () => {
+      consulted.push("deadline");
+      return "none" as const;
+    },
+  };
+  const sources: unknown[] = [];
+  const dependencies = collectionDependencies();
+  const output = await runCathay({ ...harness.context, intervention }, bothProductsInput, {
+    ...dependencies,
+    collectDomestic: async (_page, _input, _session, source) => {
+      sources.push(source.intervention);
+      return await dependencies.collectDomestic();
+    },
+    collectForeign: async (_page, _input, _session, source) => {
+      sources.push(source.intervention);
+      return await dependencies.collectForeign();
+    },
+  });
+  assert.deepEqual(sources, [intervention, intervention], "each statements collector waits with the run's port");
+  assert.ok(consulted.includes("safe-point"), "the balance overview wait is a safe point");
+  assert.equal(consulted.includes("deadline"), false);
+  assert.deepEqual(output.products!.map((product) => [product.typeId, product.status]), [
+    ["domestic", "success"],
+    ["foreign_currency", "success"],
+  ]);
+});
+
 test("Cathay all workflow never invokes an unselected product collector", async () => {
   const harness = contextHarness();
   let foreignCalls = 0;

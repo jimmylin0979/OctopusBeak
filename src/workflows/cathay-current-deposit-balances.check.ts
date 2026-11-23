@@ -301,6 +301,42 @@ assert.throws(
     readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: { ...overview, posts: 2 } }), "domestic", running),
     /^Error: Cathay current balance source response was missing or ambiguous\.$/u,
   );
+
+  // ADR 0147: the overview's account buttons are an expected page state. A
+  // manual run pauses when they never render, and after Hand back the read
+  // takes the buttons the person left; a scheduled run fails with a step-wait timeout.
+  const { FrameScopeTimeoutError } = await import("./frame-scope.ts");
+  const rendered: string[] = [];
+  let deadlines = 0;
+  const handedBack = await readCathayCurrentDepositBalanceResponse(
+    cathayOverviewPage({}, { domestic: { ...overview, uiAccounts: rendered } }),
+    "domestic",
+    {
+      ...running,
+      intervention: {
+        safePoint: async () => "none",
+        deadlineExpired: async () => {
+          deadlines += 1;
+          rendered.push(ui);
+          return "handed-back";
+        },
+      },
+    },
+    { timeoutMs: 300 },
+  );
+  assert.deepEqual(handedBack.uiAccountNumbers, [ui]);
+  assert.equal(deadlines, 1);
+  for (const intervention of [{ safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const }, undefined]) {
+    await assert.rejects(
+      readCathayCurrentDepositBalanceResponse(
+        cathayOverviewPage({}, { domestic: { ...overview, uiAccounts: [] } }),
+        "domestic",
+        { ...running, ...(intervention ? { intervention } : {}) },
+        { timeoutMs: 300 },
+      ),
+      (error: unknown) => error instanceof FrameScopeTimeoutError && error.message === "Could not read Cathay domestic UI account buttons.",
+    );
+  }
 }
 
 // Domestic balances take their identity from the run's admitted statement

@@ -260,3 +260,69 @@ assert.throws(
     ),
   /no-data|empty|terminal/i,
 );
+
+// ADR 0147: the foreign statements page is an expected page state. A manual
+// run whose page never gets there pauses for the person, and after Hand back
+// collection goes on from the page they left; a scheduled run fails the step
+// with a step-wait timeout.
+{
+  const { collectCathayForeignFinancialCaptures } = await import("./cathay-foreign-statements.ts");
+  const { FrameScopeTimeoutError } = await import("./frame-scope.ts");
+  const { sourceReader } = await import("./provider-response-reader.ts");
+  const { strictSourceText } = await import("../lib/automation/source-text.ts");
+  type Collect = Parameters<typeof collectCathayForeignFinancialCaptures>;
+  type Intervention = Collect[5]["source"]["intervention"];
+  const ACCOUNTS_READ = new Error("synthetic stop after the account list was asked for");
+
+  /** A signed-in page that stays on the home page, whatever it is asked to open, until the person moves it. */
+  const stuckPage = () => {
+    let url = "https://www.cathaybk.com.tw/MyBank/";
+    return {
+      page: {
+        url: () => url,
+        goto: async () => null,
+        evaluate: async () => "complete",
+      } as unknown as Collect[0],
+      moveTo: (to: string) => { url = to; },
+    };
+  };
+  const collect = (page: Collect[0], intervention: Intervention) => {
+    let accountsRead = 0;
+    const run = collectCathayForeignFinancialCaptures(page, oneWeek, [], [], {} as Collect[4], {
+      source: {
+        reader: sourceReader({ now: () => "2026-08-24T04:00:00.000Z", text: strictSourceText }),
+        signal: new AbortController().signal,
+        ...(intervention ? { intervention } : {}),
+      },
+      pageTimeoutMs: 300,
+      client: {
+        fetchForeignAccounts: async () => { accountsRead += 1; throw ACCOUNTS_READ; },
+        fetchTransferDetails: async () => [],
+      },
+    });
+    return { run, accountsRead: () => accountsRead };
+  };
+
+  const manual = stuckPage();
+  let deadlines = 0;
+  const handsBack = collect(manual.page, {
+    safePoint: async () => "none",
+    deadlineExpired: async () => {
+      deadlines += 1;
+      manual.moveTo("https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry");
+      return "handed-back";
+    },
+  });
+  await assert.rejects(handsBack.run, (error: unknown) => error === ACCOUNTS_READ);
+  assert.equal(deadlines, 1);
+  assert.equal(handsBack.accountsRead(), 1, "after Hand back collection reads the accounts");
+
+  for (const intervention of [{ safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const }, undefined]) {
+    const scheduled = collect(stuckPage().page, intervention);
+    await assert.rejects(
+      scheduled.run,
+      (error: unknown) => error instanceof FrameScopeTimeoutError && /foreign statements page/u.test(error.message),
+    );
+    assert.equal(scheduled.accountsRead(), 0, "a page that never arrived is never read");
+  }
+}
