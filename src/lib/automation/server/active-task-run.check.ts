@@ -1162,3 +1162,110 @@ test("while one run is paused, another reaching its pause waits for you with no 
     await run.finish(ok());
   }
 });
+
+for (const ending of ["handed-back", "given-up", "timed-out"] as const) {
+  test(`when the active intervention ends ${ending}, the next waiting run is paused for you and its 5 minutes start then`, async () => {
+    const [a, b] = await sharedQueueRuns(2);
+    const pausedA = a.run.interventionSafePoint(a.run.signal, "deadline");
+    await settledOrNot(pausedA);
+    const pausedB = b.run.interventionSafePoint(b.run.signal, "deadline");
+    await settledOrNot(pausedB);
+    // B waited a while before its turn; none of that counts against its 5 minutes.
+    b.timers.advance(4 * 60_000);
+
+    if (ending === "handed-back") assert.equal(await a.run.handBack(), true);
+    else if (ending === "given-up") assert.equal(await a.run.giveUp(), true);
+    else a.timers.advance(5 * 60_000);
+    assert.equal(await pausedA, ending);
+
+    assert.equal(b.run.intervention(), "paused", "the next in line is paused for you");
+    assert.equal(b.published()?.intervention, "paused");
+    assert.equal(b.timers.pending(), 1, "its 5 minutes start when its turn comes");
+    b.timers.advance(5 * 60_000 - 1);
+    assert.equal(await settledOrNot(pausedB), "unsettled", "it has its full 5 minutes");
+    b.timers.advance(1);
+    assert.equal(await pausedB, "timed-out");
+    assert.deepEqual(await interventionActions(b.taskRunId), ["paused", "timed-out"]);
+
+    for (const { run, execution } of [a, b]) {
+      execution.end();
+      await run.finish(fail("authentication-timeout"));
+    }
+  });
+}
+
+test("a cancelled waiting run leaves the line without affecting the others, which keep their arrival order", async () => {
+  const [a, b, c, d] = await sharedQueueRuns(4);
+  const pauses = [a, b, c, d].map(({ run }) => run.interventionSafePoint(run.signal, "deadline"));
+  await settledOrNot(Promise.all(pauses));
+  assert.deepEqual([a, b, c, d].map(({ run }) => run.intervention()), ["paused", "waiting", "waiting", "waiting"]);
+
+  await b.run.requestStop("cancelled");
+  await assert.rejects(pauses[1]!, "the stop abandons the waiting workflow's wait");
+  assert.equal(b.run.intervention(), null);
+  assert.equal(a.run.intervention(), "paused", "the active intervention goes on");
+  assert.equal(a.timers.pending(), 1, "with its own 5 minutes untouched");
+  assert.equal(c.run.intervention(), "waiting");
+  assert.equal(c.timers.pending(), 0, "no one behind it is promoted");
+  b.execution.end();
+  await b.run.finish(fail("cancelled"));
+  assert.deepEqual(await interventionActions(b.taskRunId), [], "it was never paused for you");
+
+  await a.run.handBack();
+  assert.equal(await pauses[0], "handed-back");
+  assert.equal(c.run.intervention(), "paused", "the next still waiting is next");
+  assert.equal(d.run.intervention(), "waiting");
+
+  // Cancelling the active intervention ends it, so the next in line is promoted.
+  await c.run.requestStop("cancelled");
+  await assert.rejects(pauses[2]!);
+  assert.equal(d.run.intervention(), "paused");
+  assert.equal(d.timers.pending(), 1);
+  await d.run.handBack();
+  assert.equal(await pauses[3], "handed-back");
+
+  for (const { run, execution } of [a, c, d]) {
+    execution.end();
+    await run.finish(ok());
+  }
+});
+
+test("a waiting run whose workflow ends or that finishes leaves the line", async () => {
+  const [a, b, c] = await sharedQueueRuns(3);
+  const pauses = [a, b, c].map(({ run }) => run.interventionSafePoint(run.signal, "deadline"));
+  await settledOrNot(Promise.all(pauses));
+  b.execution.end();
+  await assert.rejects(pauses[1]!, /has ended/u);
+  assert.equal(b.run.intervention(), null);
+  await b.run.finish(fail("authentication-timeout"));
+
+  await a.run.finish(fail("workflow-failed", null, false));
+  assert.equal(c.run.intervention(), "paused", "a finished active run moves the line on, past one that left");
+  await c.run.handBack();
+  assert.equal(await pauses[2], "handed-back");
+  a.execution.end();
+  c.execution.end();
+  await c.run.finish(ok());
+});
+
+test("a pause that waits its turn counts once under the cap", async () => {
+  const [a, b] = await sharedQueueRuns(2);
+  const pausedA = a.run.interventionSafePoint(a.run.signal, "deadline");
+  await settledOrNot(pausedA);
+  for (let round = 0; round < 4; round += 1) {
+    const pausedB = b.run.interventionSafePoint(b.run.signal, "deadline");
+    await settledOrNot(pausedB);
+    if (round === 0) {
+      assert.equal(b.run.intervention(), "waiting");
+      await a.run.handBack();
+      await pausedA;
+    }
+    await b.run.handBack();
+    assert.equal(await pausedB, "handed-back");
+  }
+  assert.equal(await b.run.interventionSafePoint(b.run.signal, "deadline"), null, "one pause and three more, the first spent waiting");
+  for (const { run, execution } of [a, b]) {
+    execution.end();
+    await run.finish(ok());
+  }
+});
