@@ -284,22 +284,29 @@ export async function readFubonCurrentDepositTableCells(
   return dataRows;
 }
 
+/** The menu controls are expected page states (ADR 0147): a manual run pauses when one never appears. */
 function findExactControl(
-  frames: FrameScope,
+  site: FubonEbankSite,
   text: string,
   timeoutMs: number,
 ): Promise<Locator> {
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  return frames.firstVisible(
-    (scope) => scope.locator("a, button").filter({ hasText: matcher }),
-    `Fubon control "${text}"`,
-    { timeoutMs },
-  );
+  return site.expect(async () => {
+    for (const scope of site.frames.scopes()) {
+      const controls = scope.locator("a, button").filter({ hasText: matcher });
+      const count = await controls.count().catch(() => 0);
+      for (let index = 0; index < count; index += 1) {
+        const control = controls.nth(index);
+        if (await control.isVisible().catch(() => false)) return control;
+      }
+    }
+    return null;
+  }, `Could not find a visible Fubon control "${text}".`, { timeoutMs });
 }
 
-async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  const table = await frames.until(async () => {
+async function findCurrentDepositTable(site: FubonEbankSite, timeoutMs: number): Promise<Locator> {
+  const { frames } = site;
+  const table = await site.expect(async () => {
     for (const scope of frames.scopes()) {
       const table = scope.locator(FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_SELECTOR);
       if ((await table.count().catch(() => 0)) === 1) return table;
@@ -307,10 +314,11 @@ async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): P
     return null;
   }, "Could not find Fubon current deposit table.", { timeoutMs });
   // The table can attach before its header row renders; give the header a grace period, then let the parser decide.
+  // The grace is expected to expire on some pages, so it never pauses the run.
   await ifFound(frames.until(
     () => tableHasCurrentDepositHeader(frames, table),
     "Timed out waiting for the Fubon current deposit header.",
-    { timeoutMs: Math.min(Math.max(0, deadline - Date.now()), FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS) },
+    { timeoutMs: Math.min(timeoutMs, FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS) },
   ));
   return table;
 }
@@ -332,15 +340,16 @@ export async function readFubonCurrentDepositBalanceTable(
 ): Promise<FubonCurrentDepositTable> {
   const { frames } = site;
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
+  const depositMenu = await findExactControl(site, "存款交易查詢", timeoutMs);
   await frames.withSignal((signal) => depositMenu.click({ signal }));
-  const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
+  const myDeposit = await findExactControl(site, "我的存款", timeoutMs);
   // The page's own response carries the HTTP Date and Cache-Control evidence; the rendered table is the evidence.
+  // The click is the reply wait's one-time trigger, so it is never retried.
   const { response } = await reader.witness(frames, FUBON_CURRENT_DEPOSIT_RESPONSE, {
     timeoutMs,
     trigger: () => frames.withSignal((signal) => myDeposit.click({ signal })),
   });
-  const table = await findCurrentDepositTable(frames, timeoutMs);
+  const table = await findCurrentDepositTable(site, timeoutMs);
   return {
     evidence: { kind: "cells", rows: await readFubonCurrentDepositTableCells(frames, table) },
     response,

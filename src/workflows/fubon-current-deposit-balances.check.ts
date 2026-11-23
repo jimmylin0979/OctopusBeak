@@ -6,7 +6,7 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
-import { frameScope } from "./frame-scope.ts";
+import { frameScope, FrameScopeTimeoutError } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 
@@ -436,7 +436,11 @@ after(async () => {
   await browser.close();
 });
 
-type Shell = Readonly<{ headerRowDelayMs?: number; balanceHangs?: boolean }>;
+/** Whether 存款交易查詢 ignores its click, so 我的存款 never appears until a person reveals it. */
+type Shell = Readonly<{ headerRowDelayMs?: number; balanceHangs?: boolean; menuInert?: boolean }>;
+
+const MY_DEPOSIT_LINK =
+  `<a class="task_CBOQU003 menu_CDS0102" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href='${CONTRACT.endpointPath}'">我的存款</a>`;
 
 /**
  * frame1 holds 存款交易查詢, which only a real pointer click opens, and that
@@ -461,7 +465,7 @@ async function withDepositShell(
           return await html(`<a id="menu_CDS" href="javascript:void(0)">存款交易查詢</a><div id="cds"></div>
             <script>
               document.getElementById("menu_CDS").addEventListener("click", (event) => {
-                if (!event.isTrusted) return;
+                if (!event.isTrusted || ${options.menuInert === true}) return;
                 document.getElementById("cds").innerHTML =
                   '<a class="task_CBOQU003 menu_CDS0102" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href=\\'${CONTRACT.endpointPath}\\'">我的存款</a>';
               });
@@ -513,6 +517,44 @@ test("a header row that renders after the table is waited for before the table i
   withDepositShell({ headerRowDelayMs: 600 }, async (page) => {
     const table = await readFubonCurrentDepositBalanceTable(siteFor(page), reader, { timeoutMs: 10_000 });
     assert.equal(table.evidence.rows.length, 2);
+  }));
+
+// ADR 0147: 我的存款 appearing is an expected page state. A manual run whose
+// menu never reveals it pauses for the person, and after Hand back the read
+// goes on from the menu they opened; a scheduled run, or one outside the App,
+// fails with a step-wait timeout.
+test("a 我的存款 link that never appears pauses a manual run, and the read goes on after Hand back", () =>
+  withDepositShell({ menuInert: true }, async (page, requested) => {
+    let deadlines = 0;
+    const site = fubonEbankSite(page, {
+      signal: new AbortController().signal,
+      intervention: {
+        safePoint: async () => "none",
+        deadlineExpired: async () => {
+          deadlines += 1;
+          await page.frame({ name: "frame1" })!.evaluate((link) => {
+            document.getElementById("cds")!.innerHTML = link;
+          }, MY_DEPOSIT_LINK);
+          return "handed-back";
+        },
+      },
+    });
+    const table = await readFubonCurrentDepositBalanceTable(site, reader, { timeoutMs: 1_500 });
+    assert.equal(table.evidence.rows.length, 2);
+    assert.equal(deadlines, 1);
+    assert.equal(requested.filter((path) => path === CONTRACT.endpointPath).length, 1);
+  }));
+
+test("a 我的存款 link that never appears fails a scheduled run with a step-wait timeout", () =>
+  withDepositShell({ menuInert: true }, async (page) => {
+    for (const intervention of [{ safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const }, undefined]) {
+      const site = fubonEbankSite(page, { signal: new AbortController().signal, ...(intervention ? { intervention } : {}) });
+      await assert.rejects(
+        readFubonCurrentDepositBalanceTable(site, reader, { timeoutMs: 300 }),
+        (error: unknown) => error instanceof FrameScopeTimeoutError &&
+          error.message === `Could not find a visible Fubon control "我的存款".`,
+      );
+    }
   }));
 
 test("a run cancelled while the bank holds the balance response rejects with its reason", () =>
