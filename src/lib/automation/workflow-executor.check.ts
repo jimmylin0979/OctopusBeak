@@ -567,3 +567,27 @@ test("a safe point runs on or resumes after Hand back, and an intervention that 
   await without.run("browser-example", "run-none", null, new AbortController().signal);
   assert.equal(consulted, false, "outside the App no person can take over");
 });
+
+test("an expired deadline consults the host at its own point and hears the same answers as a safe point", async () => {
+  const answers = ["none", "handed-back", "given-up"] as const;
+  const points: string[] = [];
+  const seen: string[] = [];
+  const executor = createWorkflowExecutor([{
+    id: "browser-example",
+    requiresFinancialCommit: false,
+    async run(context) {
+      assert.ok(context.intervention);
+      seen.push(await context.intervention.deadlineExpired());
+      seen.push(await context.intervention.safePoint());
+      await context.intervention.deadlineExpired();
+    },
+  }], {
+    ...ports([]),
+    intervention: { consult: async (_signal, at) => { points.push(at); return answers[points.length - 1]!; } },
+  });
+  const error = await executor.run("browser-example", "run-deadline", null, new AbortController().signal).catch((thrown: unknown) => thrown);
+  assert.deepEqual(points, ["deadline", "safe-point", "deadline"]);
+  assert.deepEqual(seen, ["none", "handed-back"]);
+  assert.ok(error instanceof FailureCodeError);
+  assert.equal(error.errorCode, "cancelled", "Give up at a deadline pause ends the run as a cancel");
+});

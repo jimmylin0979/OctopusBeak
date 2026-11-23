@@ -80,7 +80,9 @@ test("the intervention host call has its own lane, a bound on safe-point consult
   assert.ok(contract.maxPerRun >= 120 * 6 && Number.isFinite(contract.maxPerRun));
 
   assert.deepEqual(contract.parseRequest({ at: "safe-point" }), { at: "safe-point" });
-  for (const invalid of [{}, { at: "anywhere" }, { at: "safe-point", text: "typed" }, null]) {
+  // A step's expired deadline asks the host to pause the run on its own (ADR 0147).
+  assert.deepEqual(contract.parseRequest({ at: "deadline" }), { at: "deadline" });
+  for (const invalid of [{}, { at: "anywhere" }, { at: "deadline", step: "sign-in" },{ at: "safe-point", text: "typed" }, null]) {
     assert.throws(() => contract.parseRequest(invalid), `${JSON.stringify(invalid)} is refused`);
   }
   for (const resolution of ["none", "handed-back", "given-up", "timed-out"]) {

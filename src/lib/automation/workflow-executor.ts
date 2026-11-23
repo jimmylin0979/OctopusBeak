@@ -29,7 +29,7 @@ import {
 } from "./product-collection.ts";
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
 import { FailureCodeError, INTERVENTION_TIMED_OUT } from "./workflow-failures.ts";
-import type { RunInterventionAnswer } from "./run-intervention.ts";
+import type { InterventionPoint, RunInterventionAnswer } from "./run-intervention.ts";
 import { reportedVerificationPort, type WorkflowVerificationPort } from "./verification-stage.ts";
 import {
   runStopFor,
@@ -92,20 +92,32 @@ export interface WorkflowHumanAssistancePort {
   ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
 }
 
-/** How the App answers a workflow safe point (ADR 0147): the intervention host call. */
+/**
+ * How the App answers a workflow's intervention points (ADR 0147): the
+ * intervention host call. At a `safe-point` the run pauses only when the
+ * person pressed Take over; at a `deadline` it pauses on its own, when the
+ * run may.
+ */
 export interface WorkflowInterventionHostPort {
-  consult(signal: AbortSignal): Promise<RunInterventionAnswer>;
+  consult(signal: AbortSignal, at: InterventionPoint): Promise<RunInterventionAnswer>;
 }
 
 /**
- * A workflow's Run intervention safe points (ADR 0147). `safePoint` resolves
- * `none` when no Take over is waiting, or `handed-back` after the person
- * paused the run there and handed it back, so the step re-checks its page.
- * It throws when the intervention ended the run: a cancel on Give up, the
- * timed-out User-action Failure after 5 minutes.
+ * A workflow's Run intervention points (ADR 0147). Each resolves `none` when
+ * the run does not pause there, or `handed-back` after the person paused it
+ * there and handed it back, so the step re-checks its page. Each throws when
+ * the intervention ended the run: a cancel on Give up, the timed-out
+ * User-action Failure after 5 minutes.
  */
 export interface WorkflowInterventionPort {
+  /** Pauses only when a Take over is waiting. */
   safePoint(): Promise<"none" | "handed-back">;
+  /**
+   * A step's wait for an expected page state timed out. A manual run pauses
+   * here as if Take over had been pressed; `none` (a scheduled run, a Verification
+   * Stage, the pause cap) means the step fails as it would without a person.
+   */
+  deadlineExpired(): Promise<"none" | "handed-back">;
 }
 
 /** The App injects this port; its adapter uses the existing canonical worker. */
@@ -367,20 +379,22 @@ function stopRecordingBrowserPort(browser: WorkflowBrowserPort, signal: AbortSig
   return { port, stoppedUrl: () => stoppedUrl };
 }
 
-/** The workflow's safe points over the host's answer; an answer that ends the run throws. */
+/** The workflow's intervention points over the host's answer; an answer that ends the run throws. */
 function interventionPort(host: WorkflowInterventionHostPort, signal: AbortSignal): WorkflowInterventionPort {
+  const consult = async (at: InterventionPoint): Promise<"none" | "handed-back"> => {
+    signal.throwIfAborted();
+    const answer = await host.consult(signal, at);
+    signal.throwIfAborted();
+    if (answer === "timed-out") {
+      throw new FailureCodeError(INTERVENTION_TIMED_OUT, "The run paused for the person, who did not come back in time.");
+    }
+    // Give up stops the run, so its answer normally never arrives; it still ends the run as a cancel.
+    if (answer === "given-up") throw new FailureCodeError("cancelled", "The person gave up the run.");
+    return answer;
+  };
   return {
-    async safePoint() {
-      signal.throwIfAborted();
-      const answer = await host.consult(signal);
-      signal.throwIfAborted();
-      if (answer === "timed-out") {
-        throw new FailureCodeError(INTERVENTION_TIMED_OUT, "The run paused for the person, who did not come back in time.");
-      }
-      // Give up stops the run, so its answer normally never arrives; it still ends the run as a cancel.
-      if (answer === "given-up") throw new FailureCodeError("cancelled", "The person gave up the run.");
-      return answer;
-    },
+    safePoint: () => consult("safe-point"),
+    deadlineExpired: () => consult("deadline"),
   };
 }
 

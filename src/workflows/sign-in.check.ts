@@ -808,6 +808,7 @@ test("the sign-in wait is a Run intervention safe point: it pauses there and re-
           await page.evaluate("show()");
           return "handed-back" as const;
         },
+        deadlineExpired: async () => "none" as const,
       },
     };
     // The second consult comes about 1 s in; the pause outlasts the 1.5 s deadline.
@@ -821,7 +822,8 @@ test("the sign-in wait consults its safe point about once a second, not on every
   withPage("", async (page) => {
     const run = fakeRun(page);
     let consults = 0;
-    const context = { ...run.context, intervention: { safePoint: async () => { consults += 1; return "none" as const; } } };
+    const intervention = { safePoint: async () => { consults += 1; return "none" as const; }, deadlineExpired: async () => "none" as const };
+    const context = { ...run.context, intervention };
     const error = await failure(signIn(context, page, source(), form(calls(), { timeoutMs: 2_100 })));
     assert.ok(error instanceof SignInDeadlineError);
     assert.ok(consults >= 2 && consults <= 4, `${consults} consults in about 2 s`);
@@ -831,10 +833,109 @@ test("an intervention that ends the run at a safe point ends the sign-in with it
   withPage("", async (page) => {
     const run = fakeRun(page);
     const timedOut = new FailureCodeError("run-intervention-timed-out");
-    const context = { ...run.context, intervention: { safePoint: () => Promise.reject(timedOut) } };
+    const context = { ...run.context, intervention: { safePoint: () => Promise.reject(timedOut), deadlineExpired: () => Promise.reject(timedOut) } };
     assert.equal(await failure(signIn(context, page, source(), form(calls(), { timeoutMs: 5_000 }))), timedOut);
     assert.equal(listeners(page), 0);
   }));
+
+/** An intervention port whose safe points always run on; `atDeadline` answers each expired deadline. */
+const pausesAtDeadline = (atDeadline: () => Promise<"none" | "handed-back">) => ({
+  safePoint: async () => "none" as const,
+  deadlineExpired: atDeadline,
+});
+
+test("an expired sign-in deadline requests a Run intervention, and after Hand back the step re-checks the page with a fresh deadline", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    let pauses = 0;
+    // The person fixes the page while paused, for longer than the deadline, and hands back.
+    const intervention = pausesAtDeadline(async () => {
+      pauses += 1;
+      await delay(600);
+      await page.evaluate("show()");
+      return "handed-back";
+    });
+    const signedIn = await signIn({ ...run.context, intervention }, page, source(), form(calls(), { timeoutMs: 400 }));
+    assert.deepEqual(signedIn, { usedExistingSession: false });
+    assert.equal(pauses, 1, "the deadline paused the run once, without waiting for the once-a-second safe point");
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, DONE], "a pause is not a sign-in event");
+    assert.equal(listeners(page), 0);
+  }));
+
+test("each Hand back that leaves the page unchanged meets a fresh deadline, and a refused intervention fails the step as before", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    const answers = ["handed-back", "handed-back", "none"] as const;
+    let asked = 0;
+    const started: number[] = [];
+    const intervention = pausesAtDeadline(async () => {
+      started.push(Date.now());
+      return answers[asked++]!;
+    });
+    const error = await failure(signIn({ ...run.context, intervention }, page, source(), form(calls(), { timeoutMs: 300 })));
+    assert.equal(asked, 3, "the host refused the third request, as it does past the pause cap");
+    assert.ok(started[1]! - started[0]! >= 300 && started[2]! - started[1]! >= 300, "every re-check runs for the full deadline");
+    // The step's own deadline error, so the failure keeps its timeout code and step-wait-timeout page kind.
+    assert.ok(error instanceof SignInDeadlineError);
+    assert.equal(error.name, "TimeoutError");
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, FAILED]);
+    assert.equal(run.classify(error), "authentication-timeout");
+    assert.equal(listeners(page), 0);
+  }));
+
+test("a plan whose deadline classifies the page never pauses there", () =>
+  withPage("", async (page) => {
+    const run = fakeRun(page);
+    let asked = 0;
+    const intervention = pausesAtDeadline(async () => {
+      asked += 1;
+      return "handed-back";
+    });
+    const plan = form(calls(), { timeoutMs: 300, deadlineIntervention: false });
+    const error = await failure(signIn({ ...run.context, intervention }, page, source(), plan));
+    assert.ok(error instanceof SignInDeadlineError);
+    assert.equal(asked, 0);
+  }));
+
+test("native dialogs keep their Dialog Policy while the run is paused at its deadline, and one that ends the sign-in still fails it", async () => {
+  // The page raises a dialog while the person controls it; the pause itself never answers.
+  const raiseWhilePaused = (page: Page, script: string) => pausesAtDeadline(async () => {
+    await page.evaluate(`setTimeout(() => { ${script} }, 0)`);
+    return await new Promise<never>(() => {});
+  });
+
+  await withPage("", async (page) => {
+    const run = fakeRun(page);
+    const intervention = raiseWhilePaused(page, `alert(${js(UNRELATED)})`);
+    const error = await failure(signIn({ ...run.context, intervention }, page, source(), form(calls(), { dialogs: "fail", timeoutMs: 300 })));
+    assertSignInError(error, "dialog-interrupted");
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, INTERRUPTED]);
+    assert.equal(listeners(page), 0);
+  });
+
+  const locked = new Error("the account is locked");
+  await withPage("", async (page) => {
+    const run = fakeRun(page);
+    const intervention = raiseWhilePaused(page, `alert(${js(UNRELATED)})`);
+    const error = await failure(signIn({ ...run.context, intervention }, page, source(), form(calls(), { dialogs: () => locked, timeoutMs: 300 })));
+    assert.equal(error, locked);
+    assert.equal(run.classify(error), "authentication-failed");
+  });
+
+  await withPage("", async (page) => {
+    const run = fakeRun(page);
+    let asked = 0;
+    const intervention = pausesAtDeadline(async () => {
+      asked += 1;
+      await page.evaluate(`setTimeout(() => { if (ask(${js(UNRELATED)})) show(); }, 0)`);
+      await delay(300);
+      return "handed-back";
+    });
+    await signIn({ ...run.context, intervention }, page, source(), form(calls(), { dialogs: "accept", timeoutMs: 300 }));
+    assert.deepEqual(await answers(page), [true], "the accept policy answered the dialog during the pause");
+    assert.equal(asked, 1);
+  });
+});
 
 test("the settle window runs only when the plan has prompts, and an acting prompt restarts it", async () => {
   await withPage("show()", async (page) => {

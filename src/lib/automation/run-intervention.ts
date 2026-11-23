@@ -54,7 +54,15 @@ export type RunInterventionState = "requested" | "paused";
 export const RUN_INTERVENTION_RESOLUTIONS = ["handed-back", "given-up", "timed-out"] as const;
 export type RunInterventionResolution = typeof RUN_INTERVENTION_RESOLUTIONS[number];
 
-/** The host's answer at a safe point; `none`: no Take over is waiting, so the workflow runs on. */
+/**
+ * Where a workflow consults the host about a Run intervention. A `safe-point`
+ * pauses only for a Take over already waiting; a `deadline` is a step's wait
+ * for an expected page state timing out, which pauses a manual run on its own.
+ */
+export const INTERVENTION_POINTS = ["safe-point", "deadline"] as const;
+export type InterventionPoint = typeof INTERVENTION_POINTS[number];
+
+/** The host's answer at an intervention point; `none`: the run does not pause, so the workflow runs on. */
 export type RunInterventionAnswer = "none" | RunInterventionResolution;
 
 /** Why Take over was refused. */

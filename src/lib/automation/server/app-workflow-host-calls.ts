@@ -7,7 +7,12 @@ import {
 import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
-import { RUN_INTERVENTION_RESOLUTIONS, type RunInterventionAnswer } from "../run-intervention.ts";
+import {
+  INTERVENTION_POINTS,
+  RUN_INTERVENTION_RESOLUTIONS,
+  type InterventionPoint,
+  type RunInterventionAnswer,
+} from "../run-intervention.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import {
@@ -191,8 +196,9 @@ export type HostCalls = {
   };
 };
 
-/** Where the workflow consults the host. Only the Source sign-in step's waits do today. */
-export type InterventionPoint = "safe-point";
+/** Where the workflow consults the host. Only the Source sign-in step's waits and deadline do today. */
+export type { InterventionPoint } from "../run-intervention.ts";
+const interventionPoints = new Set<string>(INTERVENTION_POINTS);
 const interventionAnswers = new Set<string>(["none", ...RUN_INTERVENTION_RESOLUTIONS]);
 
 /**
@@ -299,7 +305,7 @@ export const HOST_CALL_CONTRACTS: Readonly<{ [M in HostCallMethod]: HostCallCont
     // A stop, Give up included, abandons the pause; the workflow stops waiting.
     duringStop: "drop",
     parseRequest(value) {
-      if (!isRecord(value) || !exactKeys(value, ["at"]) || value.at !== "safe-point") invalid();
+      if (!isRecord(value) || !exactKeys(value, ["at"]) || typeof value.at !== "string" || !interventionPoints.has(value.at)) invalid();
       return value as HostCallRequest<"intervention">;
     },
     parseResult(value) {
