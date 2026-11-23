@@ -207,3 +207,41 @@ test("cancelling the run interrupts a route that never becomes ready", () =>
     await assert.rejects(opening, (error: unknown) => error === CANCELLED);
     assert.ok(Date.now() - started < 2_000);
   }));
+
+test("a route's page showing is a Run intervention safe point (ADR 0147)", () =>
+  withHncbShell(async (page) => {
+    let shown = false;
+    const consulted: string[] = [];
+    const hncb = hncbNetbankSite(page, {
+      signal: new AbortController().signal,
+      intervention: {
+        // The person brings the page up, as during a Take over.
+        safePoint: async () => { consulted.push("safe-point"); shown = true; return "none"; },
+        deadlineExpired: async () => { throw new Error("the page showed before the deadline"); },
+      },
+    });
+    await hncb.open({ ...OVERVIEW, ready: async () => shown });
+    assert.deepEqual(consulted, ["safe-point"]);
+  }));
+
+test("a missing main frame pauses a manual run at its deadline and goes on from the frame the person left", () =>
+  withHncbShell(async (page) => {
+    let deadlines = 0;
+    const hncb = hncbNetbankSite(page, {
+      signal: new AbortController().signal,
+      intervention: {
+        safePoint: async () => "none",
+        deadlineExpired: async () => {
+          deadlines += 1;
+          await page.evaluate(() => {
+            const frame = document.createElement("iframe");
+            frame.name = "main";
+            document.body.append(frame);
+          });
+          return "handed-back";
+        },
+      },
+    });
+    assert.equal((await hncb.main({ timeoutMs: 300 })).name(), "main");
+    assert.equal(deadlines, 1);
+  }, { shell: "no-main" }));
