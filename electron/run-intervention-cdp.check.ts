@@ -219,6 +219,8 @@ type Launch = Readonly<{
   directory: string;
   userData: string;
   page: Page;
+  /** The tail of Electron's stdout and stderr, with the temp directory redacted. */
+  outputTail(): string;
   /** Quit Electron and wait for it to exit, so the ledger can be read. */
   quit(): Promise<void>;
   cleanup(): Promise<void>;
@@ -291,11 +293,44 @@ async function launchElectron(
     browser = await chromium.connectOverCDP(cdpUrl, { timeout: 15_000 });
     const page = await waitForRendererPage(browser, 15_000);
     await navigateToAutomation(page);
-    return { directory, userData, page, quit, cleanup };
+    const outputTail = () => `stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`;
+    return { directory, userData, page, outputTail, quit, cleanup };
   } catch (error) {
     await cleanup();
     throw error;
   }
+}
+
+/**
+ * What the live view dialog showed when no frame image appeared, so one more CI
+ * run explains itself: the dialog's text (connecting, unavailable or an ended
+ * reason), the frame events that reached the renderer, the image's source prefix
+ * and length (never its data), the renderer's console and Electron's output.
+ */
+async function liveViewDiagnostics(
+  page: Page,
+  dialog: ReturnType<Page["locator"]>,
+  outputTail: string,
+  consoleMessages: readonly string[],
+): Promise<string> {
+  const text = await dialog.innerText({ timeout: 2_000 }).catch(() => "<no dialog>");
+  const probe = await page.evaluate(() => {
+    const target = window as unknown as { __viewProbe?: { viewId: string | null; frames: number } };
+    return { frames: target.__viewProbe?.frames ?? null, hasViewId: Boolean(target.__viewProbe?.viewId) };
+  }).catch(() => null);
+  const images = await dialog.locator("img").evaluateAll((elements) => elements.map((element) => {
+    const image = element as HTMLImageElement;
+    const source = image.getAttribute("src") ?? "";
+    const box = image.getBoundingClientRect();
+    return { prefix: source.slice(0, 30), length: source.length, complete: image.complete, box: `${box.width}x${box.height}` };
+  })).catch(() => []);
+  return [
+    `live view dialog text: ${JSON.stringify(text)}`,
+    `frame events seen by the renderer: ${JSON.stringify(probe)}`,
+    `dialog images: ${JSON.stringify(images)}`,
+    `renderer console: ${JSON.stringify(consoleMessages)}`,
+    `electron ${outputTail}`,
+  ].join("\n");
 }
 
 const taskRow = (page: Page) => page.locator(`#${TASK_ID}-task-row`);
@@ -312,6 +347,13 @@ test("isolated Electron/CDP manual run: live view, pause, take over, hand back, 
   if (!launch) { await fixturePage.stop(); return; }
   const { page, userData } = launch;
   try {
+    const consoleMessages: string[] = [];
+    page.on("console", (message) => {
+      if (consoleMessages.length < 60) consoleMessages.push(`${message.type()}: ${message.text().slice(0, 300)}`);
+    });
+    page.on("pageerror", (error) => {
+      if (consoleMessages.length < 60) consoleMessages.push(`pageerror: ${error.message.slice(0, 300)}`);
+    });
     const row = taskRow(page);
     await row.waitFor({ state: "visible", timeout: 15_000 });
 
@@ -336,7 +378,11 @@ test("isolated Electron/CDP manual run: live view, pause, take over, hand back, 
     const dialog = page.locator("#run-live-view-title").locator("xpath=ancestor::*[@role='dialog'][1]");
     await dialog.waitFor({ state: "visible", timeout: 10_000 });
     const frame = dialog.locator("img.live-view-frame");
-    await frame.waitFor({ state: "visible", timeout: 30_000 });
+    try {
+      await frame.waitFor({ state: "visible", timeout: 30_000 });
+    } catch (error) {
+      throw new Error(`${String(error)}\n${await liveViewDiagnostics(page, dialog, launch.outputTail(), consoleMessages)}`);
+    }
     assert.match(await frame.getAttribute("src") ?? "", /^data:image\/jpeg;base64,/u);
     assert.equal(await dialog.locator(".live-view-control").count(), 0, "a running page offers no control");
     await waitForRenderer(page, () => {
