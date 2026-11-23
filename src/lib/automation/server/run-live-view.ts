@@ -14,6 +14,8 @@ export type RunLiveViewSink = Readonly<{
   ended(end: RunLiveViewEnd): void;
   /** True once the receiver can take no more frames, such as a closed window. */
   gone?(): boolean;
+  /** Calls the listener once the receiver is lost or reloads; returns how to stop listening. */
+  onGone?(listener: () => void): () => void;
 }>;
 
 type ScreencastFrameEvent = Readonly<{
@@ -123,7 +125,12 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
     if (current !== view) return;
     current = null;
     view.release();
-    if (!view.sink.gone?.()) view.sink.ended({ viewId: view.viewId, reason });
+    // A sender that is already gone may throw; the screencast and the record must still end.
+    try {
+      if (!view.sink.gone?.()) view.sink.ended({ viewId: view.viewId, reason });
+    } catch {
+      // Nobody is left to tell.
+    }
     await view.session.send("Page.stopScreencast").catch(() => undefined);
     await view.session.detach().catch(() => undefined);
     await view.run.recordIntervention("view-closed")
@@ -150,6 +157,8 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
     const stopListening = onTaskRunFinished((finished) => {
       if (finished.taskRunId === taskRunId) void serialized(() => end(view, "run-ended"));
     });
+    // The window reloading or its render process going away ends the view at once, frames or none.
+    const stopWatchingWindow = sink.onGone?.(() => void serialized(() => end(view, "closed"))) ?? (() => {});
     const view: View = {
       viewId,
       run,
@@ -159,6 +168,7 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
       release() {
         page.off("close", onPageClose);
         stopListening();
+        stopWatchingWindow();
       },
     };
     current = view;
@@ -169,13 +179,19 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
         void serialized(() => end(view, "closed"));
         return;
       }
-      sink.frame({
-        viewId,
-        runId: taskRunId,
-        data: event.data,
-        width: event.metadata.deviceWidth,
-        height: event.metadata.deviceHeight,
-      });
+      try {
+        sink.frame({
+          viewId,
+          runId: taskRunId,
+          data: event.data,
+          width: event.metadata.deviceWidth,
+          height: event.metadata.deviceHeight,
+        });
+      } catch {
+        // A frame that cannot be sent means the window is gone: end rather than strand an intervention.
+        void serialized(() => end(view, "closed"));
+        return;
+      }
       void session.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => undefined);
     });
     try {
