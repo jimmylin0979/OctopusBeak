@@ -36,7 +36,16 @@ export type RunLiveViewDeps = Readonly<{
   activeRun(taskRunId: string): ActiveAutomationTaskRun | null;
   /** A CDP session on the page; Playwright's own by default. */
   openCdpSession?(page: Page): Promise<LiveViewCdpSession>;
+  /** How long an open waits for a run whose browser is still starting to host its page. */
+  pageWaitMs?: number;
+  /** How often that wait looks again. */
+  pagePollMs?: number;
 }>;
+
+/** A cold browser launch can take a while on a slow machine; the card offers the view before it ends. */
+const PAGE_WAIT_MS = 30_000;
+const PAGE_POLL_MS = 100;
+const NO_PAGE_YET = "The run has no browser page to show yet.";
 
 /** Painted at most this large, which is enough to read a dialog and keeps IPC light. */
 const SCREENCAST = { format: "jpeg", quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 } as const;
@@ -144,7 +153,7 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
     }
     if (run.trigger !== "manual") throw new Error("Only a manual run offers a live view.");
     const page = run.currentExecution()?.page() ?? null;
-    if (!page) throw new Error("The run has no browser page to show yet.");
+    if (!page) throw new Error(NO_PAGE_YET);
     return { run, page };
   }
 
@@ -229,9 +238,25 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
         await view.session.send(method, params);
       }
     },
-    /** Open a view of the task's running manual run, ending any other view first. */
-    open: (taskId: string, taskRunId: string, sink: RunLiveViewSink): Promise<{ viewId: string }> =>
-      serialized(() => start(taskId, taskRunId, sink)),
+    /**
+     * Open a view of the task's running manual run, ending any other view first.
+     * The card offers the view as soon as the run is running, before its browser
+     * has hosted a page, so the open waits for that page rather than failing for good.
+     */
+    async open(taskId: string, taskRunId: string, sink: RunLiveViewSink): Promise<{ viewId: string }> {
+      const deadline = Date.now() + (deps.pageWaitMs ?? PAGE_WAIT_MS);
+      for (;;) {
+        try {
+          watched(taskId, taskRunId);
+          break;
+        } catch (error) {
+          const pending = error instanceof Error && error.message === NO_PAGE_YET;
+          if (!pending || Date.now() >= deadline || sink.gone?.()) throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, deps.pagePollMs ?? PAGE_POLL_MS));
+      }
+      return await serialized(() => start(taskId, taskRunId, sink));
+    },
     /** Close this view; a close for a view already ended does nothing. */
     close: (viewId: string): Promise<void> =>
       serialized(async () => {

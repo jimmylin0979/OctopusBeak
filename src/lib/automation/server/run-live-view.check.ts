@@ -318,6 +318,8 @@ test("only a running manual run with a page can be watched", async () => {
   const liveViewWithoutPage = createRunLiveView({
     activeRun: (taskRunId) => (taskRunId === pageless.taskRunId ? pageless : null),
     openCdpSession: () => Promise.reject(new Error("no page to attach to")),
+    pageWaitMs: 40,
+    pagePollMs: 5,
   });
   const { sink } = recordingSink();
 
@@ -332,6 +334,52 @@ test("only a running manual run with a page can be watched", async () => {
   await liveViewWithoutPage.closeAll();
   await scheduled.finish({ summary: null, failure: null });
   await pageless.finish({ summary: null, failure: null });
+});
+
+test("a view opened while the run's browser is still starting waits for the page instead of failing", async () => {
+  const run = await openRun();
+  const pageFake = fakePage();
+  const liveView = createRunLiveView({
+    activeRun: () => run,
+    openCdpSession: () => pageFake.openCdpSession(),
+    pageWaitMs: 2_000,
+    pagePollMs: 5,
+  });
+  const { sink, frames } = recordingSink();
+
+  // A cold Chromium launch: the execution exists, its page does not yet.
+  const execution = run.beginExecution(`${run.taskRunId}-round-1`);
+  const opening = liveView.open(run.taskId, run.taskRunId, sink);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(pageFake.sessions.length, 0, "nothing is attached before the page exists");
+  execution.hostPage({ page: pageFake.page });
+
+  const { viewId } = await opening;
+  const [session] = pageFake.sessions;
+  assert.equal(methods(session!)[0], "Page.startScreencast");
+  session!.paint("late-frame");
+  await tick();
+  assert.deepEqual(frames.map((frame) => [frame.viewId, frame.data]), [[viewId, "late-frame"]]);
+  await liveView.closeAll();
+  await run.finish({ summary: null, failure: null });
+});
+
+test("a view still waiting for the page gives up when the run ends or the wait is spent", async () => {
+  const run = await openRun();
+  const liveView = createRunLiveView({
+    activeRun: () => run,
+    openCdpSession: () => Promise.reject(new Error("no page to attach to")),
+    pageWaitMs: 2_000,
+    pagePollMs: 5,
+  });
+  const { sink } = recordingSink();
+  run.beginExecution(`${run.taskRunId}-round-1`);
+
+  const opening = liveView.open(run.taskId, run.taskRunId, sink);
+  const refused = assert.rejects(opening, /not running/u);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await run.finish({ summary: null, failure: null });
+  await refused;
 });
 
 const SCREENCAST_CALLS = ["Page.startScreencast", "Page.screencastFrameAck", "Page.stopScreencast"];
