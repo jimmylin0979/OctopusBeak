@@ -886,6 +886,26 @@ try {
       waitForYuantaDepositQueryResult(resultSite(), 1_000),
       /CSV download link or a no-data result/u,
     );
+    // ADR 0147: the submitted query's result is an expected page state. A manual run whose
+    // page never shows it pauses for the person and goes on from the page they hand back.
+    {
+      let deadlines = 0;
+      const manual = yuantaEbankSite(resultPage, {
+        signal: new AbortController().signal,
+        text: strictSourceText,
+        intervention: {
+          safePoint: async () => "none",
+          deadlineExpired: async () => {
+            deadlines += 1;
+            await resultPage.setContent('<a class="order_2 m_color_check" href="/x.csv">下載CSV檔</a>');
+            return "handed-back";
+          },
+        },
+      });
+      assert.equal(await waitForYuantaDepositQueryResult(manual, 300), "download-ready");
+      assert.equal(deadlines, 1, "an expired query wait pauses a manual run once");
+      await resultPage.setContent("<p>查詢中</p>");
+    }
     const pendingQuery = new AbortController();
     const cancelledWait = waitForYuantaDepositQueryResult(resultSite(pendingQuery.signal));
     pendingQuery.abort(new Error("query wait cancelled"));
