@@ -23,7 +23,7 @@ import {
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
 import { linebankAccountCurrency } from "./linebank-current-deposit-balances.ts";
-import { frameScope } from "./frame-scope.ts";
+import { FrameScopeTimeoutError, frameScope } from "./frame-scope.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
@@ -383,11 +383,6 @@ const dialogLocator = {
       async isVisible() {
         return index === 1 && dialogVisible;
       },
-      async waitFor(options: { state?: string; timeout?: number }) {
-        assert.equal(options.state, "hidden");
-        assert.equal(options.timeout, LINEBANK_LOGIN_TIMEOUT_MS);
-        assert.equal(dialogVisible, false);
-      },
       getByRole: () => dialogButtonLocator,
     };
   },
@@ -411,8 +406,8 @@ const approvedNavigationLink = {
   },
 };
 const approvedDropdown = {
-  async waitFor() {
-    return undefined;
+  async isVisible() {
+    return true;
   },
 };
 const approvedAlertPage = {
@@ -517,9 +512,6 @@ const persistentDialog = {
       async isVisible() {
         return true;
       },
-      async waitFor() {
-        throw new Error("Timeout 120000ms exceeded");
-      },
       getByRole: () => dialogButtonLocator,
     };
   },
@@ -545,9 +537,9 @@ const persistentAlertPage = {
     role === "alertdialog" ? persistentDialog : persistentNavigationLink,
 } as never;
 await assert.rejects(async () => {
-  await linebankAutoDismissApprovedAlert(readScope(persistentAlertPage));
+  await linebankAutoDismissApprovedAlert(readScope(persistentAlertPage), undefined, { timeoutMs: 300 });
   await linebankEnsureTransactionPage(readScope(persistentAlertPage));
-}, /Timeout 120000ms exceeded/);
+}, (error: unknown) => error instanceof FrameScopeTimeoutError && /alert dialog to close/u.test(error.message));
 assert.equal(approvedButtonClicks, 2);
 assert.equal(persistentNavigationClicks, 0);
 
@@ -571,8 +563,9 @@ const transactionLink = {
   },
 };
 const accountDropdown = {
-  async waitFor(options: { timeout?: number }) {
-    navigationEvents.push(`wait-dropdown:${options.timeout}`);
+  async isVisible() {
+    navigationEvents.push("dropdown-visible");
+    return true;
   },
 };
 const navigationPage = {
@@ -591,13 +584,13 @@ const navigationPage = {
 await linebankEnsureTransactionPage(readScope(navigationPage));
 assert.deepEqual(navigationEvents, [
   "click-transaction-link",
-  "wait-dropdown:120000",
+  "dropdown-visible",
 ]);
 
 navigationEvents.length = 0;
 navigationUrl = "https://accessibility.linebank.com.tw/transaction";
 await linebankEnsureTransactionPage(readScope(navigationPage));
-assert.deepEqual(navigationEvents, ["wait-dropdown:120000"]);
+assert.deepEqual(navigationEvents, ["dropdown-visible"]);
 
 navigationEvents.length = 0;
 navigationUrl = "https://accessibility.linebank.com.tw/";
@@ -625,7 +618,7 @@ const fallbackPage = {
 await linebankEnsureTransactionPage(readScope(fallbackPage));
 assert.deepEqual(navigationEvents, [
   "goto:https://accessibility.linebank.com.tw/transaction",
-  "wait-dropdown:120000",
+  "dropdown-visible",
 ]);
 
 const sourceResponse = linebankTransactionPageFromResponse({

@@ -5,7 +5,7 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { frameScope } from "./frame-scope.ts";
-import { LineBankApiClient, linebankEnsureTransactionPage } from "./linebank-statements.ts";
+import { LineBankApiClient, linebankAutoDismissApprovedAlert, linebankEnsureTransactionPage } from "./linebank-statements.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 const ORIGIN = "https://accessibility.linebank.com.tw";
@@ -55,6 +55,39 @@ test("cancelling the run stops the transaction page waiting two minutes for the 
   withSilentLineBank(async (page) => {
     await page.goto(`${ORIGIN}/transaction`);
     assert.ok((await settlesWithin(linebankEnsureTransactionPage(scopeCancelledAfter(page, 300)))) < 2_000);
+  }));
+
+test("the account dropdown is a Run intervention safe point (ADR 0147)", () =>
+  withSilentLineBank(async (page) => {
+    await page.goto(`${ORIGIN}/transaction`);
+    const consulted: string[] = [];
+    await linebankEnsureTransactionPage(frameScope(page, new AbortController().signal), {
+      // The person brings the dropdown up, as during a Take over.
+      safePoint: async () => {
+        consulted.push("safe-point");
+        await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", `<div id="account-dropdown">帳戶</div>`));
+        return "none";
+      },
+      deadlineExpired: async () => assert.fail("the dropdown appeared before the deadline"),
+    });
+    assert.deepEqual(consulted, ["safe-point"]);
+  }));
+
+test("a dismissed alert that stays up is a Run intervention safe point (ADR 0147)", () =>
+  withSilentLineBank(async (page) => {
+    await page.goto(`${ORIGIN}/transaction`);
+    await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", `<div role="alertdialog" id="alert"><button>確定</button></div>`));
+    const consulted: string[] = [];
+    const dismissed = await linebankAutoDismissApprovedAlert(frameScope(page, new AbortController().signal), {
+      safePoint: async () => {
+        consulted.push("safe-point");
+        await page.evaluate(() => document.getElementById("alert")!.remove());
+        return "none";
+      },
+      deadlineExpired: async () => assert.fail("the alert closed before the deadline"),
+    });
+    assert.equal(dismissed, true);
+    assert.deepEqual(consulted, ["safe-point"]);
   }));
 
 test("cancelling the run stops the transaction link click, which never lands", () =>
