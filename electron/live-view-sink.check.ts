@@ -9,8 +9,8 @@ function fakeSender() {
   const sender = {
     send: (channel: string, payload: unknown) => sent.push([channel, payload]),
     isDestroyed: () => false,
-    on: (event: string, listener: (...args: never[]) => void) => emitter.on(event, listener),
-    removeListener: (event: string, listener: (...args: never[]) => void) => emitter.removeListener(event, listener),
+    on: (event: string, listener: (...args: any[]) => void) => emitter.on(event, listener),
+    removeListener: (event: string, listener: (...args: any[]) => void) => emitter.removeListener(event, listener),
   } as unknown as LiveViewSender;
   return { sender, emitter, sent };
 }
