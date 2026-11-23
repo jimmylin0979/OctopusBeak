@@ -22,6 +22,7 @@ import { signalRunEvent, type WorkflowRunEvent } from "../run-event.ts";
 import type { AutomationPersistencePort } from "./store.ts";
 import { collectionNotification } from "./collection-summary.ts";
 import { userActionForFailure } from "../workflow-failures.ts";
+import { createRunInterventionQueue, type RunInterventionQueue } from "./run-intervention-queue.ts";
 import { createTestPGlite } from"../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
@@ -71,6 +72,7 @@ async function open(options: {
   dataVersionStore?: DataVersionStore;
   scheduledAtUtc?: string;
   timers?: ReturnType<typeof fakeTimers>;
+  interventionQueue?: RunInterventionQueue;
 } = {}) {
   const taskRunId = await createRun(options.taskId, options.status, options.scheduledAtUtc);
   const runtime = createAutomationRuntimeState();
@@ -82,6 +84,7 @@ async function open(options: {
     dataVersionStore: options.dataVersionStore ?? createDataVersionStore(),
     ...(options.forceQuitAvailableAfterMs === undefined ? {} : { forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs }),
     ...(options.timers ? { interventionTimers: options.timers } : {}),
+    ...(options.interventionQueue ? { interventionQueue: options.interventionQueue } : {}),
   });
   const published = () => runtime.snapshot().tasks.find((task) => task.runId === taskRunId);
   return { run, runtime, published, taskRunId };
@@ -866,8 +869,8 @@ const interventionActions = async (taskRunId: string) =>
 const storedSignals = async (taskRunId: string) =>
   (await persistence.taskRunById(taskRunId))?.events.map((event) => event.signal ?? event.code) ?? [];
 
-async function runningManual(timers = fakeTimers()) {
-  const opened = await open({ taskId: "sinopac-statements", timers });
+async function runningManual(timers = fakeTimers(), interventionQueue?: RunInterventionQueue, taskId = "sinopac-statements") {
+  const opened = await open({ taskId, timers, ...(interventionQueue ? { interventionQueue } : {}) });
   await opened.run.transition("running");
   const execution = opened.run.beginExecution("round-1");
   execution.hostPage({ page: { name: "page" } as never });
@@ -1120,4 +1123,42 @@ test("deadline pauses and Take over pauses share one cap: one pause and three mo
   assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "exhausted" });
   execution.end();
   await run.finish(fail("authentication-timeout"));
+});
+
+// One Run intervention at a time (ADR 0147). Runs that share the host's
+// intervention queue wait their turn at their safe points, each on its own
+// timers so a check can tell whose 5 minutes run.
+async function sharedQueueRuns(count: number) {
+  const queue = createRunInterventionQueue();
+  const runs = [];
+  for (let index = 0; index < count; index += 1) runs.push(await runningManual(fakeTimers(), queue));
+  return runs;
+}
+
+test("while one run is paused, another reaching its pause waits for you with no 5 minutes running", async () => {
+  const [a, b] = await sharedQueueRuns(2);
+  const pausedA = a.run.interventionSafePoint(a.run.signal, "deadline");
+  await settledOrNot(pausedA);
+  assert.equal(a.run.intervention(), "paused");
+
+  const pausedB = b.run.interventionSafePoint(b.run.signal, "deadline");
+  assert.equal(await settledOrNot(pausedB), "unsettled", "the second workflow waits at its safe point too");
+  assert.equal(b.run.intervention(), "waiting");
+  assert.equal(b.published()?.intervention, "waiting");
+  assert.equal(b.run.current().status, "running", "a waiting run keeps its browser and stays active");
+  assert.equal(b.timers.pending(), 0, "a waiting run's 5 minutes have not started");
+  b.timers.advance(10 * 60_000);
+  assert.equal(await settledOrNot(pausedB), "unsettled", "waiting never times out");
+  assert.equal(await b.run.handBack(), false, "Hand back acts only on the active intervention");
+  assert.equal(await b.run.giveUp(), false, "Give up acts only on the active intervention");
+  assert.deepEqual(await interventionActions(b.taskRunId), [], "a waiting run is not paused for you yet");
+
+  await a.run.handBack();
+  await pausedA;
+  await b.run.handBack();
+  await pausedB;
+  for (const { run, execution } of [a, b]) {
+    execution.end();
+    await run.finish(ok());
+  }
 });
