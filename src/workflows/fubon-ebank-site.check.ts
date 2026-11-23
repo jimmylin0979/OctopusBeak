@@ -6,7 +6,7 @@ import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { FUBON_EBANK_ENTRY_URL, FUBON_EBANK_HOST, fubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
-import type { BrowserScope } from "./frame-scope.ts";
+import { FrameScopeTimeoutError, type BrowserScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 
@@ -155,6 +155,46 @@ test("a route clicked in place lets the bank redirect instead of following the l
     });
     assert.equal(await scope.locator("#handed-off").count(), 1);
     assert.ok(!requested.includes("/B2C/direct.faces"), "the link's href is never navigated to directly");
+  }));
+
+// ADR 0147: the bank's loading mask clearing is an expected page state. A
+// manual run pauses when it never clears, and after Hand back the wait checks
+// the page the person left; a scheduled run, or one outside the App, fails
+// with a step-wait timeout.
+test("a loading mask that never clears pauses a manual run, then checks the page again after Hand back", () =>
+  withFubonShell(async (page) => {
+    const stuck = async (scope: BrowserScope) => {
+      await scope.evaluate(() => {
+        document.body.insertAdjacentHTML("beforeend", `<div class="_mask stuck" style="position:fixed;inset:0">處理中</div>`);
+      });
+    };
+    const site = fubonEbankSite(page, context());
+    const scope = await site.open(DEPOSITS);
+    await site.waitForMaskToClear();
+    await stuck(scope);
+    let deadlines = 0;
+    const manual = fubonEbankSite(page, {
+      ...context(),
+      intervention: {
+        safePoint: async () => "none",
+        deadlineExpired: async () => {
+          deadlines += 1;
+          await scope.evaluate(() => document.querySelector("._mask.stuck")?.remove());
+          return "handed-back";
+        },
+      },
+    });
+    await manual.waitForMaskToClear(300);
+    assert.equal(deadlines, 1);
+
+    await stuck(scope);
+    for (const intervention of [{ safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const }, undefined]) {
+      await assert.rejects(
+        fubonEbankSite(page, { ...context(), ...(intervention ? { intervention } : {}) }).waitForMaskToClear(300),
+        (error: unknown) => error instanceof FrameScopeTimeoutError &&
+          error.message === "Timed out waiting for the bank loading mask to clear.",
+      );
+    }
   }));
 
 test("a page without the header frame fails as a lost session", () =>
