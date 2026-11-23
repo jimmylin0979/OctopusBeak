@@ -8,6 +8,8 @@ import {
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import {
   assembleCurrentDepositCapture,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -376,7 +378,13 @@ export type PostCurrentDepositResponse = Readonly<{
  */
 export async function readPostCurrentDepositBalanceResponse(
   page: Page,
-  input: Readonly<{ signal: AbortSignal; reader: ProviderResponseReader; timeoutMs?: number }>,
+  input: Readonly<{
+    signal: AbortSignal;
+    reader: ProviderResponseReader;
+    timeoutMs?: number;
+    /** The run's Run intervention points, which the asset overview's wait consults (ADR 0147). */
+    intervention?: WorkflowInterventionPort;
+  }>,
 ): Promise<PostCurrentDepositResponse> {
   const scope = frameScope(page, input.signal);
   const timeoutMs = input.timeoutMs ?? 60_000;
@@ -389,7 +397,14 @@ export async function readPostCurrentDepositBalanceResponse(
       }));
   }
   const overview = page.getByText("資產總覽", { exact: true }).first();
-  await scope.withSignal((signal) => overview.waitFor({ state: "visible", timeout: timeoutMs, signal }));
+  // The asset overview is an expected page state (ADR 0147): a manual run pauses when it never appears.
+  await expectPageState(
+    scope,
+    input.intervention,
+    () => overview.isVisible().catch(() => false),
+    "Timed out waiting for the Post asset overview.",
+    { timeoutMs },
+  );
   const captured = await input.reader.acquire(scope, POST_CURRENT_DEPOSIT_RESPONSE, {
     evidence: "json",
     request: (request) => requestMatchesCurrentBalanceDiscriminants(request.postData),

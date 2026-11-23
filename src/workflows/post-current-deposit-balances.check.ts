@@ -202,12 +202,12 @@ class SequencedPostPage extends EventEmitter {
   }
 
   getByText(text: string): {
-    first(): { waitFor(): Promise<void>; click(): Promise<void> };
+    first(): { isVisible(): Promise<boolean>; click(): Promise<void> };
   } {
     assert.equal(text, "資產總覽");
     return {
       first: () => ({
-        waitFor: async () => {},
+        isVisible: async () => true,
         click: async () => {
           const wrongRequest = JSON.stringify({
             header: {
