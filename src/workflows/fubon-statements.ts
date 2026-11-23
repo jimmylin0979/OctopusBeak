@@ -6,6 +6,7 @@ import type { AccountIdentityContinuity } from "../ledger/pglite/account-identit
 import { PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { selectOptionWithoutPointer } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
+import type { PageStateWaitOptions } from "./page-state-wait.ts";
 import {
   FUBON_EBANK_HOST,
   fubonEbankSite,
@@ -1312,16 +1313,9 @@ async function countDepositRows(
   site: FubonEbankSite,
   scope: BrowserScope,
 ): Promise<number> {
-  await site.frames.withSignal((signal) =>
-    scope
-      .locator("a.btn_sel")
-      .filter({ hasText: "交易明細查詢" })
-      .first()
-      .waitFor({
-        state: "attached",
-        timeout: 60_000,
-        signal,
-      }),
+  await site.attached(
+    scope.locator("a.btn_sel").filter({ hasText: "交易明細查詢" }).first(),
+    "the Fubon deposit account rows",
   );
   return await site.frames.race(depositRows(scope).count());
 }
@@ -1352,9 +1346,10 @@ function isFubonDepositAccountPlaceholder(
 
 export async function readFubonDepositAccountOptions(
   site: FubonEbankSite,
+  wait: PageStateWaitOptions = {},
 ): Promise<FubonDepositAccountOption[]> {
   const { frames } = site;
-  const scope = await frames.scopeWith(depositAccountSelectSelector);
+  const scope = await site.scopeWith(depositAccountSelectSelector, undefined, wait);
   const options = scope.locator(`${depositAccountSelectSelector} option`);
   const count = await frames.race(options.count());
   const accounts: FubonDepositAccountOption[] = [];
@@ -1382,7 +1377,7 @@ export async function selectDepositAccount(
   site: FubonEbankSite,
   account: FubonDepositAccountOption,
 ): Promise<void> {
-  const scope = await site.frames.scopeWith(depositAccountSelectSelector);
+  const scope = await site.scopeWith(depositAccountSelectSelector);
   await site.frames.race(
     selectOptionWithoutPointer(
       scope.locator(depositAccountSelectSelector),
@@ -1428,9 +1423,7 @@ export async function openTransactionDetailForAccountIndex(
   const transactionDetails = accountRow
     .locator("a.btn_sel")
     .filter({ hasText: "交易明細查詢" });
-  await site.frames.withSignal((signal) =>
-    transactionDetails.waitFor({ state: "attached", timeout: 30_000, signal }),
-  );
+  await site.attached(transactionDetails, "the Fubon 交易明細查詢 control", { timeoutMs: 30_000 });
   await site.activate(transactionDetails);
 
   return maskedAccount;
@@ -1628,7 +1621,8 @@ export async function fetchDepositStatement(
   reader: ProviderResponseReader,
 ): Promise<FubonParsedDepositStatement> {
   const { page } = site.frames;
-  const scope = await site.frames.scopeWith(depositSubmitSelector);
+  // The query form is an expected page state; the postbacks below are sent once and never re-probed.
+  const scope = await site.scopeWith(depositSubmitSelector);
   const dateRangeId = `input[id="form1:rdoDay${query.rangeCode}"]`;
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
@@ -1670,6 +1664,7 @@ export async function fetchDepositStatement(
     pageFieldName = nextParsed.pageFieldName;
   }
 
+  // The run wrote this document itself from the replies already parsed, so a page a person left would not match it.
   await site.frames.scopeWith(depositResultTable, "deposit statement result table");
 
   return assembleFubonParsedDepositStatement(pages, accountOption);

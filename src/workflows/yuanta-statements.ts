@@ -341,7 +341,7 @@ async function prepareYuantaDepositPage(
   const scope = await site.open(TRANSACTION_DETAILS_ROUTE);
   const { label } = YUANTA_QUICK_RANGES.find(({ dateRange }) => dateRange === queryRange.dateRange)!;
   await site.chooseDuration(scope, { label });
-  await site.frames.scopeWith("#acctno");
+  await site.expect.scopeWith("#acctno");
 }
 
 export async function readYuantaDepositAccountOptions(
@@ -349,7 +349,7 @@ export async function readYuantaDepositAccountOptions(
   _filters: string[] = [],
 ) {
   const { frames } = site;
-  const scope = await frames.scopeWith("#acctno");
+  const scope = await site.expect.scopeWith("#acctno");
   const options = scope.locator("#acctno option");
   const count = await frames.race(options.count());
   const availableAccounts: Array<{ label: string; value: string }> = [];
@@ -384,7 +384,7 @@ export async function waitForYuantaDepositQueryResult(
   timeoutMs = 60_000,
 ): Promise<YuantaDepositQueryResult> {
   const { frames } = site;
-  return await frames.until<YuantaDepositQueryResult>(async () => {
+  return await site.expect.until<YuantaDepositQueryResult>(async () => {
     for (const scope of frames.scopes()) {
       if (await hasAttachedLocator(csvDownloadLink(scope))) return "download-ready";
       if (await hasAttachedLocator(scope.getByText("查無資料", { exact: true }))) {
@@ -400,7 +400,7 @@ async function queryAccount(
   account: { label: string; value: string },
 ): Promise<YuantaDepositQueryResult> {
   const { frames } = site;
-  const scope = await frames.scopeWith("#acctno");
+  const scope = await site.expect.scopeWith("#acctno");
   await frames.withSignal((signal) => scope.locator("#acctno").selectOption(account.value, { signal }));
   await frames.withSignal((signal) => scope.locator("#submitbutton").click({ signal }));
   await frames.settle();
@@ -432,7 +432,7 @@ export async function downloadYuantaStatementRows(
   account: { label: string; value: string },
   reader: ProviderResponseReader,
 ): Promise<YuantaStatementDownload> {
-  const scope = await site.frames.scopeWith(csvDownloadLink, "YuanTa CSV download link");
+  const scope = await site.expect.scopeWith(csvDownloadLink, "YuanTa CSV download link");
   const exportLink = csvDownloadLink(scope).first();
   await site.frames.withSignal((signal) => exportLink.waitFor({ state: "attached", timeout: 60_000, signal }));
   const downloaded = await site.readCsv(exportLink, reader);

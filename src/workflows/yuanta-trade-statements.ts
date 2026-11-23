@@ -38,7 +38,7 @@ import {
   YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   YUANTA_TRADE_CREDENTIAL_FIELDS,
@@ -47,6 +47,7 @@ import {
 } from "../lib/automation/server/sources/yuanta-trade.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { admitInvestments, stageCanonicalInvestments } from "./canonical-investment-staging.ts";
@@ -863,11 +864,20 @@ async function submitReportForm(
 /** What reading one report page needs from the securities product. */
 export type YuantaTradeReportProduct = Pick<ProductCollectionHandle, "reader" | "validate" | "signal">;
 
+/** How a report read waits for its page (ADR 0147). */
+export type YuantaTradeReportWait = Readonly<{
+  /** The run's Run intervention points; a manual run pauses when the signed-in report page never shows. */
+  intervention?: WorkflowInterventionPort;
+  /** How long the report page may take to show the signed-in marker; default 60 s. */
+  timeoutMs?: number;
+}>;
+
 export async function captureTypedReport(
   page: Page,
   reportType: string,
   params: Record<string, string | number>,
   product: YuantaTradeReportProduct,
+  wait: YuantaTradeReportWait = {},
 ): Promise<ReportPage> {
   const scope = frameScope(page, product.signal);
   const reportUrl = new URL(
@@ -892,7 +902,14 @@ export async function captureTypedReport(
     { request: page.context().request, params },
   ));
   await acceptDisclaimerIfPresent(scope);
-  await scope.withSignal((signal) => page.locator("#btnLogout").waitFor({ timeout: 60_000, signal }));
+  // The report was read above, so only this look at the page repeats after a Hand back.
+  await expectPageState(
+    scope,
+    wait.intervention,
+    () => page.locator("#btnLogout").isVisible().catch(() => false),
+    "Timed out waiting for the YuanTa report page to show the signed-in marker.",
+    wait.timeoutMs === undefined ? {} : { timeoutMs: wait.timeoutMs },
+  );
   return captured;
 }
 
@@ -1651,9 +1668,10 @@ export type YuantaTradeSource = Readonly<{
 export function yuantaTradeSource(
   page: Page,
   product: YuantaTradeReportProduct,
+  wait: YuantaTradeReportWait = {},
 ): YuantaTradeSource {
   return {
-    captureReport: (reportType, params) => captureTypedReport(page, reportType, params, product),
+    captureReport: (reportType, params) => captureTypedReport(page, reportType, params, product, wait),
   };
 }
 
@@ -1782,7 +1800,7 @@ export type YuantaTradeProductRunner = (
 
 const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, input, context, product) => {
   const snapshot = await readYuantaTradeSource(
-    yuantaTradeSource(page, product),
+    yuantaTradeSource(page, product, context.intervention ? { intervention: context.intervention } : {}),
     input,
     context,
     product,

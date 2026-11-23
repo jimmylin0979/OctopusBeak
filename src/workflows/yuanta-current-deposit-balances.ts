@@ -380,13 +380,13 @@ function currentDepositSummaryRoute(kind: YuantaCurrentDepositKind): YuantaRoute
 }
 
 function findCurrentDepositTable(
-  frames: FrameScope,
+  site: YuantaEbankSite,
   kind: YuantaCurrentDepositKind,
   timeoutMs: number,
 ): Promise<Locator> {
   const expected = expectedHeaders(kind);
-  return frames.until(async () => {
-    for (const scope of frames.scopes()) {
+  return site.expect.until(async () => {
+    for (const scope of site.frames.scopes()) {
       const tables = scope.locator("table.normalTable");
       const count = await tables.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
@@ -443,7 +443,7 @@ export async function readYuantaCurrentDepositBalanceTable(
     ));
     if (tab) await frames.withSignal((signal) => tab.click({ signal }));
   }
-  const link = await frames.until(async () => {
+  const link = await site.expect.until(async () => {
     for (const scope of frames.scopes()) {
       const found = await summaryDetailsLink(scope, kind);
       if (found) return found;
@@ -454,7 +454,7 @@ export async function readYuantaCurrentDepositBalanceTable(
     timeoutMs,
     trigger: () => frames.withSignal((signal) => link.click({ signal })),
   });
-  const table = await findCurrentDepositTable(frames, kind, timeoutMs);
+  const table = await findCurrentDepositTable(site, kind, timeoutMs);
   return {
     evidence: { kind: "cells", rows: await frames.race(readYuantaCurrentDepositTableCells(table, kind)) },
     response,

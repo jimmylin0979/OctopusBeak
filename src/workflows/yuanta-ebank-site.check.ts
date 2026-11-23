@@ -7,7 +7,8 @@ import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/fa
 import { validationReporter, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import type { BrowserScope } from "./frame-scope.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
+import { FrameScopeTimeoutError, type BrowserScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { providerResponseReader, sourceReader } from "./provider-response-reader.ts";
 import {
@@ -192,6 +193,44 @@ test("cancelling the run interrupts a page that never becomes ready", () =>
     const started = Date.now();
     await assert.rejects(opening, (error: unknown) => error === CANCELLED);
     assert.ok(Date.now() - started < 2_000);
+  }));
+
+// ADR 0147: a product's page is an expected page state. A manual run whose
+// page never gets there pauses for the person, and after Hand back the page is
+// checked again; a scheduled run, or one outside the App, fails the step with a
+// step-wait timeout.
+test("a page that never becomes ready pauses a manual run, which goes on from the page the person hands back", () =>
+  withYuantaShell(async (page) => {
+    const consulted: string[] = [];
+    const intervention: WorkflowInterventionPort = {
+      safePoint: async () => {
+        consulted.push("safe-point");
+        return "none";
+      },
+      deadlineExpired: async () => {
+        consulted.push("deadline");
+        await page.frame({ name: "fmain" })!.goto(yuantaRouteUrl("transactiondetails", CID));
+        return "handed-back";
+      },
+    };
+    const site = yuantaEbankSite(page, { ...context(), intervention, pageStateTimeoutMs: 300 });
+    const scope = await site.open({ path: "never", description: "never", ready: attached("#acctno") });
+    assert.equal(frameName(scope), "fmain");
+    assert.equal(await scope.locator("#acctno").count(), 1, "the page the person handed back is the one read");
+    assert.equal(consulted.filter((point) => point === "deadline").length, 1);
+    assert.ok(consulted.includes("safe-point"), "every pass of the wait is a Take over safe point");
+  }));
+
+test("a page that never becomes ready fails a scheduled run, or one outside the App, as a step-wait timeout", () =>
+  withYuantaShell(async (page) => {
+    const refused: WorkflowInterventionPort = { safePoint: async () => "none", deadlineExpired: async () => "none" };
+    for (const intervention of [refused, undefined]) {
+      const site = yuantaEbankSite(page, { ...context(), ...(intervention ? { intervention } : {}), pageStateTimeoutMs: 300 });
+      await assert.rejects(
+        site.open({ path: "never", description: "the never page", ready: attached("#never") }),
+        (error: unknown) => error instanceof FrameScopeTimeoutError && /the never page/u.test(error.message),
+      );
+    }
   }));
 
 test("a date range is picked from the visible duration links, and a custom range fills its dates", () =>

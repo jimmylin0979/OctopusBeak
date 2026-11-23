@@ -36,7 +36,7 @@ const js = JSON.stringify;
 async function withYuanta(
   script: string,
   body: (page: Page) => Promise<void>,
-  options: Readonly<{ startAt?: string; servisignMissing?: boolean; disclaimerOnly?: boolean }> = {},
+  options: Readonly<{ startAt?: string; servisignMissing?: boolean; disclaimerOnly?: boolean; audioChallenge?: boolean }> = {},
 ): Promise<void> {
   const page = await browser.newPage();
   try {
@@ -46,6 +46,7 @@ async function withYuanta(
         ? `<input id="loginid" /><input id="loginPWD" type="password" />
           <button id="loginBtn" type="button" onclick="go()">登入</button>
           ${options.servisignMissing ? "<p>系統找不到安控元件</p>" : ""}
+          ${options.audioChallenge ? '<input id="verificationCode" />' : ""}
           <script>
             function signedIn() { location.href = ${js(REPORT_URL)}; }
             function go() { ${script} }
@@ -130,3 +131,26 @@ test("cancelling Yuanta Trade while it waits for the signed-in page ends its own
     assert.deepEqual(run.codes, [STARTED]);
     assert.equal(dialogListeners(page), 0);
   }, { disclaimerOnly: true }));
+
+// ADR 0147 and ADR 0039: Yuanta Trade's verification is solver-only. While the
+// person works an open Verification Stage, however long, the run's waits ask
+// for no Run intervention at a safe point or at a deadline.
+test("a wait inside a Yuanta Trade Verification Stage requests no Run intervention", () =>
+  withYuanta("signedIn()", async (page) => {
+    const asked: string[] = [];
+    const intervention = {
+      safePoint: async () => { asked.push("safe-point"); return "none" as const; },
+      deadlineExpired: async () => { asked.push("deadline"); return "none" as const; },
+    };
+    const slowAudioAnswer = async (stagePage: Page) => {
+      // Longer than a safe point's one-second consult interval.
+      await delay(1_500);
+      await stagePage.locator("#verificationCode").fill("123456");
+      return "entered" as const;
+    };
+    const run = recordedRun(page, slowAudioAnswer);
+    const context = { ...run.context, intervention };
+    const signedIn = await signIn(context, page, YUANTA_TRADE_SOURCE, yuantaTradeSignInPlan(CREDENTIALS, context));
+    assert.deepEqual(signedIn, { usedExistingSession: false });
+    assert.deepEqual(asked, []);
+  }, { audioChallenge: true }));

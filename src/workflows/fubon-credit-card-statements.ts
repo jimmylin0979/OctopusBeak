@@ -412,7 +412,8 @@ async function readFubonCurrentUsedCredit(
       timeoutMs: 60_000,
       trigger: async (): Promise<FubonCurrentCreditPage> => {
         try {
-          const scope = await site.open(CURRENT_CREDIT_ROUTE);
+          // This open is the reply wait's one-time trigger, so it is never re-probed.
+          const scope = await site.open(CURRENT_CREDIT_ROUTE, { intervene: false });
           return { html: await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })) };
         } catch (error) {
           if (context.signal.aborted) throw error;
@@ -521,13 +522,7 @@ async function openStatementDetailsPage(site: FubonEbankSite): Promise<BrowserSc
     );
   }
   if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
-  await site.frames.withSignal((signal) =>
-    statementDetailsTable(scope).waitFor({
-      state: "attached",
-      timeout: 60_000,
-      signal,
-    }),
-  );
+  await site.attached(statementDetailsTable(scope), "the Fubon credit card statement details");
   return scope;
 }
 
@@ -550,7 +545,7 @@ async function findStatementDetailsScope(
   site: FubonEbankSite,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  return await site.frames.until(async () => {
+  return await site.expect(async () => {
     for (const scope of site.frames.scopes()) {
       if (await isStatementDetailsResult(scope)) return scope;
     }
@@ -589,13 +584,7 @@ async function openUnbilledDetailsPage(
   )
     return { scope, providerNoRecord: true };
 
-  await site.frames.withSignal((signal) =>
-    unbilledDetailsTable(scope).waitFor({
-      state: "attached",
-      timeout: 60_000,
-      signal,
-    }),
-  );
+  await site.attached(unbilledDetailsTable(scope), "the Fubon credit card unbilled details");
   return { scope, providerNoRecord: false };
 }
 
@@ -695,7 +684,7 @@ async function readStatementPeriodLabel(
   scope: BrowserScope,
 ): Promise<string> {
   const rows = statementSummaryTable(scope).locator("tr");
-  await site.frames.withSignal((signal) => rows.nth(1).waitFor({ state: "attached", timeout: 60_000, signal }));
+  await site.attached(rows.nth(1), "the Fubon credit card statement period");
   const cells = await readCells(site.frames, rows.nth(1));
   return cells[0] ?? "";
 }
@@ -1097,7 +1086,7 @@ async function selectStatementPeriod(
   const period = periodTabs.find((item) => item.offset === periodOffset);
   if (!period) throw new Error(`Unsupported period offset ${periodOffset}.`);
 
-  const scope = await frames.scopeWith(PERIOD_SELECTOR);
+  const scope = await site.scopeWith(PERIOD_SELECTOR);
   const currentValue = await frames.withSignal((signal) =>
     scope.locator(PERIOD_SELECTOR).getAttribute("value", { signal }),
   );
@@ -1107,16 +1096,22 @@ async function selectStatementPeriod(
   if (currentValue === String(periodOffset)) return scope;
 
   const tab = scope.locator("a").filter({ hasText: period.label }).first();
-  await frames.withSignal((signal) => tab.waitFor({ state: "attached", timeout: 60_000, signal }));
+  await site.attached(tab, `the Fubon period tab "${period.label}"`);
   await site.activate(tab);
 
-  const switched = await frames.until(async () => {
-    const candidate = await frames.scopeWith(PERIOD_SELECTOR, undefined, { timeoutMs: 5_000 });
-    const value = await frames.withSignal((signal) =>
-      candidate.locator(PERIOD_SELECTOR).getAttribute("value", { signal }),
-    );
-    return value === String(periodOffset) ? candidate : null;
-  }, `Timed out switching to period tab "${period.label}".`, { timeoutMs: 60_000 });
+  // The tab was clicked once above; this probe only reads, so it may run again after Hand back.
+  const switched = await site.expect(async () => {
+    for (const candidate of frames.scopes()) {
+      const value = await frames.withSignal((signal) =>
+        candidate.locator(PERIOD_SELECTOR).first().getAttribute("value", { timeout: 1_000, signal }),
+      ).catch((error: unknown) => {
+        if (frames.signal.aborted) throw error;
+        return null;
+      });
+      if (value === String(periodOffset)) return candidate;
+    }
+    return null;
+  }, `Timed out switching to period tab "${period.label}".`);
   await site.waitForMaskToClear();
   return switched;
 }

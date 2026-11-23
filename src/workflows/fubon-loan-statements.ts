@@ -681,13 +681,7 @@ async function readLoanAccountOptions(
 ): Promise<LoanAccountOption[]> {
   const { frames } = site;
   const combo = scope.locator(LOAN_ACCOUNT_SELECTOR);
-  await frames.withSignal((signal) =>
-    combo.locator("option").first().waitFor({
-      state: "attached",
-      timeout: 60_000,
-      signal,
-    }),
-  );
+  await site.attached(combo.locator("option").first(), "the Fubon loan account list");
 
   const options = combo.locator("option");
   const count = await frames.race(options.count());
@@ -715,7 +709,7 @@ async function selectLoanAccount(
   site: FubonEbankSite,
   account: LoanAccountOption,
 ): Promise<BrowserScope> {
-  const scope = await site.frames.scopeWith(LOAN_ACCOUNT_SELECTOR);
+  const scope = await site.scopeWith(LOAN_ACCOUNT_SELECTOR);
   await site.waitForMaskToClear();
 
   await site.frames.race(
@@ -723,7 +717,7 @@ async function selectLoanAccount(
   );
   await site.waitForMaskToClear();
 
-  return await site.frames.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
+  return await site.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
 }
 
 async function offersTransactionDetailQuery(
@@ -732,13 +726,7 @@ async function offersTransactionDetailQuery(
 ): Promise<boolean> {
   const { frames } = site;
   const combo = scope.locator(LOAN_QUERY_ITEM_SELECTOR);
-  await frames.withSignal((signal) =>
-    combo.locator("option").first().waitFor({
-      state: "attached",
-      timeout: 60_000,
-      signal,
-    }),
-  );
+  await site.attached(combo.locator("option").first(), "the Fubon loan query item list");
 
   const options = combo.locator("option");
   const count = await frames.race(options.count());
@@ -756,7 +744,7 @@ async function configureLoanQuery(
   query: FubonLoanQuery,
 ): Promise<BrowserScope> {
   const { frames } = site;
-  const scope = await frames.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
+  const scope = await site.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
   await frames.race(
     selectOptionWithoutPointer(scope.locator(LOAN_QUERY_ITEM_SELECTOR), TRANSACTION_DETAIL_QUERY),
   );
@@ -882,7 +870,7 @@ async function fetchLoanQueryHtml(
   site: FubonEbankSite,
   reader: ProviderResponseReader,
 ): Promise<string> {
-  const scope = await site.frames.scopeWith("#form1\\:doValidate");
+  const scope = await site.scopeWith("#form1\\:doValidate");
   const html = await acceptLoanReply(site, await site.postback(
     scope.locator("form").first(),
     "form1:doValidate",
@@ -965,7 +953,7 @@ async function fetchFubonLoanStatementPages(
       throw new Error("Fubon loan pagination repeated a page request.");
     requests.add(requestKey);
 
-    const scope = await site.frames.scopeWith("#form1\\:doValidate");
+    const scope = await site.scopeWith("#form1\\:doValidate");
     html = await acceptLoanReply(site, await site.postback(
       scope.locator("form").first(),
       undefined,

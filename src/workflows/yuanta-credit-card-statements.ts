@@ -1,3 +1,4 @@
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { errors, type Locator, type Page } from "playwright";
 import { z } from "zod";
@@ -394,11 +395,11 @@ function selectMonthOptions(
 }
 
 async function waitForYuantaCreditCardSummary(
-  frames: FrameScope,
+  site: YuantaEbankSite,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  return await frames.until(async () => {
-    for (const scope of frames.scopes()) {
+  return await site.expect.until(async () => {
+    for (const scope of site.frames.scopes()) {
       const bodyText = collapseSourceWhitespace(
         await scope.locator("body").innerText().catch(() => ""),
       );
@@ -447,14 +448,14 @@ async function findYuantaSummaryPagerControl(
 }
 
 async function readYuantaSummaryHtml(
-  frames: FrameScope,
+  site: YuantaEbankSite,
   previousHtml?: string,
 ): Promise<string> {
-  return await frames.until(async () => {
-    const preferredFrame = frames.page.frame({ name: "fmain" });
+  return await site.expect.until(async () => {
+    const preferredFrame = site.frames.page.frame({ name: "fmain" });
     const scopes = preferredFrame
-      ? [preferredFrame, ...frames.scopes().filter((scope) => scope !== preferredFrame)]
-      : frames.scopes();
+      ? [preferredFrame, ...site.frames.scopes().filter((scope) => scope !== preferredFrame)]
+      : site.frames.scopes();
     for (const scope of scopes) {
       const bodyText = collapseSourceWhitespace(
         await scope.locator("body").innerText().catch(() => ""),
@@ -663,7 +664,7 @@ export async function loadYuantaCreditCardSummaryPage(
 
     let firstHtml: string;
     try {
-      firstHtml = await readYuantaSummaryHtml(frames);
+      firstHtml = await readYuantaSummaryHtml(site);
     } catch (error) {
       if (!(error instanceof FrameScopeTimeoutError)) throw error;
       throw new YuantaCreditSummaryNavigationError();
@@ -692,7 +693,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
     const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
       firstHtml,
       async (_request) => {
-        const scope = await waitForYuantaCreditCardSummary(frames);
+        const scope = await waitForYuantaCreditCardSummary(site);
         const pager = await findYuantaSummaryPagerControl(frames, scope);
         if (!pager)
           throw new Error(
@@ -701,7 +702,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
         await frames.withSignal((signal) => pager.click({ force: true, signal }));
         await frames.settle();
         frames.signal.throwIfAborted();
-        const nextHtml = await readYuantaSummaryHtml(frames, currentHtml);
+        const nextHtml = await readYuantaSummaryHtml(site, currentHtml);
         sourceText.assertIntact(nextHtml);
         currentHtml = nextHtml;
         return nextHtml;
@@ -709,7 +710,8 @@ async function traverseYuantaSummaryWithCurrentEvidence(
     );
     return { ...traversal, ...current };
   } catch (error) {
-    if (error instanceof SourceTextIntegrityError || frames.signal.aborted) throw error;
+    // A run the person ended, or let time out, in a Run intervention (ADR 0147) is not a missing cross-check.
+    if (error instanceof SourceTextIntegrityError || error instanceof FailureCodeError || frames.signal.aborted) throw error;
     // The settled-summary pages are an optional cross-check. A failure while
     // paging them, such as a parse change or a vanished pager, keeps the
     // current-used-credit evidence the first page already carried.
@@ -1062,15 +1064,18 @@ export function buildYuantaCanonicalCreditCardCaptures(
   return capture ? [capture] : [];
 }
 
+/** The bills form is an expected page state (ADR 0147); the month query's request is sent only after it. */
 async function waitForCreditCardForm(
-  frames: FrameScope,
+  site: YuantaEbankSite,
   bills: BrowserScope,
 ): Promise<void> {
-  await frames.withSignal((signal) =>
-    bills.waitForSelector(
-      'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
-      { state: "attached", timeout: 120_000, signal },
-    ),
+  const form = bills.locator(
+    'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
+  );
+  await site.expect.until(
+    async () => (await form.count().catch(() => 0)) > 0,
+    "Timed out waiting for the YuanTa credit card form.",
+    { timeoutMs: 120_000 },
   );
 }
 
@@ -1081,7 +1086,7 @@ async function submitCreditCardMonth(
   reader: ProviderResponseReader,
 ): Promise<string> {
   const { frames } = site;
-  await waitForCreditCardForm(frames, bills);
+  await waitForCreditCardForm(site, bills);
   const { evidence } = await reader.capture(frames, YUANTA_CARD_MONTH_RESPONSE, {
     evidence: "text",
     timeoutMs: 120_000,
@@ -1108,7 +1113,7 @@ async function submitCreditCardUnbilled(
   reader: ProviderResponseReader,
 ): Promise<string> {
   const { frames } = site;
-  await waitForCreditCardForm(frames, bills);
+  await waitForCreditCardForm(site, bills);
   const { evidence } = await reader.capture(frames, YUANTA_CARD_UNBILLED_RESPONSE, {
     evidence: "text",
     timeoutMs: 120_000,
