@@ -16,6 +16,11 @@ import {
   packagedBrowserFixtureEnabled,
   packagedBrowserFixtureStartUrl,
 } from "./packaged-browser-fixture.ts";
+import {
+  runInterventionFixtureDefinition,
+  runInterventionFixtureEnabled,
+  runInterventionFixtureStartUrl,
+} from "./run-intervention-fixture.ts";
 import { statementSelectionGroup, VERIFIED_SOURCES } from "./sources/index.ts";
 import { credentialInputKey, runVerifiedEntry } from "./verified-entry.ts";
 import { browser, NONBROWSER, type AppWorkflowRuntime, type VerifiedSource } from "./sources/verified-source.ts";
@@ -135,7 +140,21 @@ export function appWorkflowCatalogForEnvironment(
     runtime: browser(source.startUrl),
     inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
   }));
-  return [...appWorkflowCatalog, ...previewRegistrations, ...packagedBrowserFixtureRegistrations];
+  // Test-only: the Electron/CDP check of the Run live view and intervention (ADR 0147).
+  const runInterventionFixtureRegistrations: readonly AppWorkflowRegistration[] =
+    runInterventionFixtureEnabled(environment)
+    ? [{
+      definition: runInterventionFixtureDefinition(),
+      runtime: browser(runInterventionFixtureStartUrl(environment)),
+      inputFromEnvironment() { return null; },
+    }]
+    : [];
+  return [
+    ...appWorkflowCatalog,
+    ...previewRegistrations,
+    ...packagedBrowserFixtureRegistrations,
+    ...runInterventionFixtureRegistrations,
+  ];
 }
 
 /** Test-only local workflow registrations are absent during ordinary App startup. */
