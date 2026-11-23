@@ -3,6 +3,8 @@ import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { ProviderEvidence, ProviderResponse } from "./provider-response.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState, type PageStateWaitOptions } from "./page-state-wait.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 
 export const FUBON_EBANK_ENTRY_URL = "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 export const FUBON_EBANK_HOST = new URL(FUBON_EBANK_ENTRY_URL).hostname;
@@ -41,8 +43,22 @@ export type FubonRoute = Readonly<{
 export type FubonEbankSite = Readonly<{
   frames: FrameScope;
   header(): Promise<Frame>;
-  /** Open a product's page from any signed-in page and return the scope that shows it. */
-  open(route: FubonRoute): Promise<BrowserScope>;
+  /**
+   * Open a product's page from any signed-in page and return the scope that
+   * shows it. Its waits are expected page states unless `intervene` is false,
+   * for an open that is itself the trigger of a provider-reply wait.
+   */
+  open(route: FubonRoute, options?: Readonly<{ intervene?: boolean }>): Promise<BrowserScope>;
+  /**
+   * Wait for a page state collection expects (ADR 0147): each pass is a Run
+   * intervention safe point, and an expired wait pauses a manual run, then
+   * probes again after Hand back. The probe must only read the page.
+   */
+  expect<T>(probe: () => Promise<T | null | undefined | false>, failure: string, options?: PageStateWaitOptions): Promise<T>;
+  /** The first scope in which the target matches an attached element, as an expected page state. */
+  scopeWith(target: string | ((scope: BrowserScope) => Locator), description?: string, options?: PageStateWaitOptions): Promise<BrowserScope>;
+  /** Wait for the locator to match an attached element, as an expected page state. */
+  attached(locator: Locator, description: string, options?: PageStateWaitOptions): Promise<void>;
   /** Click a control without the pointer, following a real href in its own scope. */
   activate(control: Locator, scope?: BrowserScope): Promise<void>;
   waitForMaskToClear(timeoutMs?: number): Promise<void>;
@@ -60,13 +76,20 @@ export type FubonReply = Readonly<{
 /** A postback's reply, with the URL the form was posted to: its action, resolved against the page. */
 export type FubonPostbackReply = FubonReply & Readonly<{ postedTo: string }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal }>;
+/** The run's signal, and its Run intervention points, which collection's expected page states consult (ADR 0147). */
+type SiteContext = Readonly<{ signal: AbortSignal; intervention?: WorkflowInterventionPort }>;
+
+type PageStateWait = FubonEbankSite["expect"];
 
 const isFollowableHref = (href: string | null): href is string =>
   !!href && href !== "#" && !href.startsWith("javascript:");
 
 export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite {
   const frames = frameScope(page, context.signal);
+  const expect: PageStateWait = (probe, failure, options) =>
+    expectPageState(frames, context.intervention, probe, failure, options);
+  const plainWait: PageStateWait = (probe, failure, options) => frames.until(probe, failure, options);
+  const hasAttached = async (locator: Locator) => (await locator.count().catch(() => 0)) > 0;
 
   const header = async (): Promise<Frame> => {
     const frame = await ifFound(frames.frame(HEADER_FRAME, { timeoutMs: SHELL_TIMEOUT_MS }));
@@ -89,8 +112,8 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
     }));
   };
 
-  const findLink = (route: FubonRoute, timeoutMs: number) =>
-    frames.until(async () => {
+  const findLink = (route: FubonRoute, timeoutMs: number, wait: PageStateWait = plainWait) =>
+    wait(async () => {
       for (const scope of frames.scopes()) {
         const candidates = route.link(scope);
         for (const candidate of Array.isArray(candidates) ? candidates : [candidates]) {
@@ -110,18 +133,19 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
     }
   };
 
-  const trigger = async (route: FubonRoute, openMenu: boolean): Promise<void> => {
+  const trigger = async (route: FubonRoute, openMenu: boolean, wait: PageStateWait): Promise<void> => {
     if (openMenu && route.menu) {
       await activateTolerantly((await header()).locator(route.menu).first());
     }
+    // A link already on the page is optional: its short wait is expected to expire, so it never pauses the run.
     const present = openMenu ? null : await ifFound(findLink(route, LINK_PRESENT_TIMEOUT_MS));
-    if (!present && !openMenu && route.menu) return await trigger(route, true);
-    const { scope, link } = present ?? await findLink(route, LINK_TIMEOUT_MS);
+    if (!present && !openMenu && route.menu) return await trigger(route, true, wait);
+    const { scope, link } = present ?? await findLink(route, LINK_TIMEOUT_MS, wait);
     await activateTolerantly(link, route.clickInPlace ? undefined : scope);
   };
 
-  const showing = (route: FubonRoute, timeoutMs?: number) =>
-    frames.until(async () => {
+  const showing = (route: FubonRoute, timeoutMs?: number, wait: PageStateWait = plainWait) =>
+    wait(async () => {
       for (const scope of frames.scopes()) {
         if (await route.ready(scope)) return scope;
       }
@@ -131,18 +155,34 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
   const site: FubonEbankSite = {
     frames,
     header,
-    open: async (route) => {
+    open: async (route, { intervene = true } = {}) => {
+      const wait = intervene ? expect : plainWait;
       await header();
-      await trigger(route, false);
+      await trigger(route, false, wait);
+      // The first render has a grace period before the site triggers again, so it never pauses the run.
       const rendered = await ifFound(showing(route, ROUTE_RENDER_TIMEOUT_MS));
       if (rendered) return rendered;
       // The first trigger can replace the transaction frame before its task renders; trigger it once more.
-      await trigger(route, true);
-      return await showing(route);
+      await trigger(route, true, wait);
+      return await showing(route, undefined, wait);
+    },
+    expect,
+    scopeWith: (target, description, options) => {
+      const locatorFor = typeof target === "string" ? (scope: BrowserScope) => scope.locator(target) : target;
+      const label = description ?? (typeof target === "string" ? `selector "${target}"` : "the element");
+      return expect(async () => {
+        for (const scope of frames.scopes()) {
+          if (await hasAttached(locatorFor(scope))) return scope;
+        }
+        return null;
+      }, `Could not find ${label} in any frame.`, options);
+    },
+    attached: async (locator, description, options) => {
+      await expect(() => hasAttached(locator), `Timed out waiting for ${description}.`, options);
     },
     activate,
     waitForMaskToClear: async (timeoutMs) => {
-      await frames.until(async () => {
+      await expect(async () => {
         for (const scope of frames.scopes()) {
           const masks = scope.locator(BANK_MASK_SELECTOR);
           const count = await masks.count().catch(() => 0);
@@ -151,7 +191,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
           }
         }
         return true;
-      }, "Timed out waiting for the bank loading mask to clear.", { timeoutMs });
+      }, "Timed out waiting for the bank loading mask to clear.", timeoutMs === undefined ? {} : { timeoutMs });
     },
     postback: async (form, submitFieldName, fields = {}) => {
       const reply = await frames.race(form.evaluate(async (element, options) => {
