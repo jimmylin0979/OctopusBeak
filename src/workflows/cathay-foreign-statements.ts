@@ -219,8 +219,10 @@ async function openForeignStatementsPage(
     scope,
     source.intervention,
     async () => {
+      // A redirect to sign-in or elsewhere is not the page; a different case or a trailing slash still is.
       const at = new URL(page.url());
-      if (at.host !== FOREIGN_STATEMENTS_PAGE.host || at.pathname !== FOREIGN_STATEMENTS_PAGE.pathname) return false;
+      const path = (url: URL) => url.pathname.replace(/\/+$/u, "").toLowerCase();
+      if (at.host !== FOREIGN_STATEMENTS_PAGE.host || path(at) !== path(FOREIGN_STATEMENTS_PAGE)) return false;
       // A page still navigating has no document to read yet.
       const ready = await page.evaluate(() => document.readyState).catch(() => "loading");
       return ready !== "loading";

@@ -232,8 +232,9 @@ type RequestContract<M extends HostCallMethod> = Readonly<{
   maxPerRun: number;
   /**
    * A token bucket for requests a workflow sends on a timer, which a lifetime
-   * count would exhaust in a long run: it holds `burst` and refills at
-   * `perSecond` from the run's start. A request beyond it is a protocol failure.
+   * count would exhaust in a long run: it starts full at the run's first such
+   * request, holds `burst` and refills at `perSecond`. A request beyond it is
+   * a protocol failure.
    */
   rate?: Readonly<{ burst: number; perSecond: number; covers(request: HostCallRequest<M>): boolean }>;
   /**
