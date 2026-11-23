@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 import { type Page } from "playwright";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -646,7 +647,8 @@ const loanResultFor = (account: string, page: string) => {
   }
   return loanResultGrid([loanRow("2026/01/10", "LOAN-PAYMENT", "500.00")], "1", "");
 };
-const loanQueryForm = (selected: string, result: string) => `<form id="form1" method="post" action="${LOAN_QUERY_PATH}">
+/** With `inert`, choosing an account never fills the query items, until a person does. */
+const loanQueryForm = (selected: string, result: string, inert = false) => `<form id="form1" method="post" action="${LOAN_QUERY_PATH}">
     <select id="form1:loanAccountCombo" name="form1:loanAccountCombo" onchange="showQueryItems()">
       <option value="none">請選擇</option>
       ${shellLoanAccounts.map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`).join("")}
@@ -667,7 +669,7 @@ const loanQueryForm = (selected: string, result: string) => `<form id="form1" me
       mask.style.cssText = "position:fixed;inset:0";
       document.body.appendChild(mask);
       setTimeout(() => {
-        document.getElementById("form1:queryItemCombo").innerHTML =
+        if (!${inert}) document.getElementById("form1:queryItemCombo").innerHTML =
           '<option value="TRANSACTION_DETAIL_QUERY">交易明細</option><option value="DATES_DETAIL_QUERY">日期明細</option>';
         mask.remove();
       }, 300);
@@ -682,6 +684,9 @@ async function readLoanThroughShell(
     brokenAccount?: string;
     failAccount?: string;
     reader?: ProductCollectionHandle["reader"];
+    inertQueryItems?: boolean;
+    /** The run's Run intervention points, given the signed-in page. */
+    intervention?: (page: Page) => WorkflowInterventionPort;
   }> = {},
 ) {
   const browser = await launchCheckBrowser();
@@ -721,9 +726,9 @@ async function readLoanThroughShell(
           return await route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xc3, 0x28]) });
         }
         if (account === options.failAccount) {
-          return await route.fulfill({ ...html(loanQueryForm(account, loanResultFor(account, page))), status: 500 });
+          return await route.fulfill({ ...html(loanQueryForm(account, loanResultFor(account, page), options.inertQueryItems)), status: 500 });
         }
-        return await route.fulfill(html(loanQueryForm(account, loanResultFor(account, page))));
+        return await route.fulfill(html(loanQueryForm(account, loanResultFor(account, page), options.inertQueryItems)));
       }
       switch (pathname) {
         case "/B2C/common/Index.faces":
@@ -731,7 +736,7 @@ async function readLoanThroughShell(
         case "/B2C/header.faces":
           return await route.fulfill(html(shellLoanHeader));
         case LOAN_QUERY_PATH:
-          return await route.fulfill(html(loanQueryForm("", "")));
+          return await route.fulfill(html(loanQueryForm("", "", options.inertQueryItems)));
         default:
           return await route.fulfill(html(`<p>${pathname}</p>`));
       }
@@ -763,6 +768,7 @@ async function readLoanThroughShell(
         signal: options.signal ?? new AbortController().signal,
         text: strictSourceText,
         now: () => "2026-02-01T00:00:00.000Z",
+        ...(options.intervention ? { intervention: options.intervention(shellPage) } : {}),
       } as unknown as Parameters<typeof runFubonLoanStatements>[2],
       options.reader ? { ...product, reader: options.reader } : product,
     );
@@ -795,6 +801,33 @@ test("Fubon loan reads every account through the bank's own task link and pages 
     }),
     [["loan", 2, 2], ["loan", 1, 1]],
   );
+});
+
+// ADR 0147: the query items an account selection fills are an expected page
+// state. A manual run whose page never fills them pauses for the person, and
+// after Hand back the read goes on from the items they left.
+test("a loan query item list that never fills pauses a manual run, and the read goes on after Hand back", async () => {
+  let takeovers = 0;
+  const read = await readLoanThroughShell({
+    inertQueryItems: true,
+    intervention: (page) => ({
+      safePoint: async () => {
+        const filled = await page.frame({ name: "txnFrame" })?.evaluate(() => {
+          const combo = document.getElementById("form1:queryItemCombo");
+          const account = document.getElementById("form1:loanAccountCombo") as HTMLSelectElement | null;
+          if (!combo || combo.children.length > 0 || !account || account.value === "none") return false;
+          combo.innerHTML = '<option value="TRANSACTION_DETAIL_QUERY">交易明細</option>';
+          return true;
+        }).catch(() => false);
+        if (!filled) return "none";
+        takeovers += 1;
+        return "handed-back";
+      },
+      deadlineExpired: async () => "none",
+    }),
+  });
+  assert.equal(takeovers, 2, "each account's item list is filled by the person");
+  assert.deepEqual(read.summary, { sourceCaptureCount: 2, rowCount: 3 });
 });
 
 test("Fubon loan fails a reply with malformed bytes as a source integrity failure", async () => {
