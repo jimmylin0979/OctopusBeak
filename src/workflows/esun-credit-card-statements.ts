@@ -36,7 +36,7 @@ import {
   type ProviderReply,
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
@@ -46,6 +46,7 @@ import { ESUN_CREDENTIAL_FIELDS, ESUN_PRODUCTS, ESUN_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
@@ -582,14 +583,24 @@ function isEsunCardPopupHost(hostname: string): boolean {
   return /(?:^|\.)esunbank\.com(?:\.tw)?$/u.test(hostname);
 }
 
-async function openCardPopup(scope: FrameScope, label: string, path: string): Promise<FrameScope> {
+async function openCardPopup(
+  scope: FrameScope,
+  intervention: WorkflowInterventionPort | undefined,
+  label: string,
+  path: string,
+): Promise<FrameScope> {
   const { page } = scope;
   const popupPromise = scope.withSignal((signal) => page.waitForEvent("popup", { timeout: 30_000, signal }));
   popupPromise.catch(() => undefined);
   await scope.withSignal((signal) => page.getByText(label, { exact: true }).click({ signal }));
   const popup = await popupPromise;
-  await scope.withSignal((signal) =>
-    popup.waitForURL((url) => url.pathname === path, { timeout: 60_000, signal }));
+  // The popup reaching its page is an expected page state (ADR 0147); the click above is not probed again.
+  await expectPageState(
+    scope,
+    intervention,
+    async () => new URL(popup.url()).pathname === path,
+    `Timed out waiting for the E.SUN ${label} page.`,
+  );
   // The popup's host names the host its history replies must come from, so it must be E.SUN's own.
   // The card pages open on iesc.esunbank.com, outside esunbank.com.tw.
   if (!isEsunCardPopupHost(new URL(popup.url()).hostname))
@@ -674,12 +685,13 @@ export async function loadNextEsunTimelinePage(
 
 async function queryStatements(
   scope: FrameScope,
+  intervention: WorkflowInterventionPort | undefined,
   input: Readonly<{ startDate: string; endDate: string }>,
   reader: ProviderResponseReader,
 ): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
   const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
-  const popup = await openCardPopup(scope, "刷卡明細", "/IESC/cardTrans");
+  const popup = await openCardPopup(scope, intervention, "刷卡明細", "/IESC/cardTrans");
   const timeline = esunHistoryResponse("E.SUN timeline", ESUN_TIMELINE_PATH, popup);
   try {
     const first = await reader.capture(popup, timeline, {
@@ -979,10 +991,11 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 
 async function readIssuerStatementSummaries(
   scope: FrameScope,
+  intervention: WorkflowInterventionPort | undefined,
   reader: ProviderResponseReader,
   validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
-  const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
+  const popup = await openCardPopup(scope, intervention, "帳單明細", "/IESC/cardBill");
   const billSummary = esunHistoryResponse("E.SUN bill summary", ESUN_BILL_SUMMARY_PATH, popup);
   const { page } = popup;
   try {
@@ -1108,7 +1121,7 @@ export type EsunCreditCardSource = Readonly<{
 }>;
 
 type EsunCreditCardProduct = Pick<ProductCollectionHandle, "event" | "stage" | "validate" | "reader" | "signal">;
-type EsunCreditCardRunContext = Pick<WorkflowContext, "event" | "now" | "signal">;
+type EsunCreditCardRunContext = Pick<WorkflowContext, "event" | "now" | "signal" | "intervention">;
 
 async function readEsunCreditCardSource(
   page: Page,
@@ -1130,7 +1143,7 @@ async function readEsunCreditCardSource(
   let rows: StatementRow[];
   let timeline: CreditCardMonthTimeline;
   try {
-    ({ rows, timeline, startDate } = await queryStatements(scope, { startDate, endDate }, reader));
+    ({ rows, timeline, startDate } = await queryStatements(scope, context.intervention, { startDate, endDate }, reader));
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1143,7 +1156,7 @@ async function readEsunCreditCardSource(
 
   let issuerSummaries: EsunIssuerStatementSummary[];
   try {
-    issuerSummaries = await readIssuerStatementSummaries(scope, reader, product.validate);
+    issuerSummaries = await readIssuerStatementSummaries(scope, context.intervention, reader, product.validate);
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;

@@ -392,7 +392,25 @@ test("history replies are declared on the host the card popup opened on", () => 
   assert.equal(harness.committed.length, 1, "replies from the popup's own host are accepted");
 }));
 
-test("a card popup outside esunbank.com and esunbank.com.tw stops the read", () => withManagedSecret(async () => {
+test("a card popup that has not reached its page is a Run intervention safe point (ADR 0147)", () => withManagedSecret(async () => {
+  // Each popup opens on a loading page; the person moves it on, as during a Take over.
+  let path = "/IESC/loading";
+  let consulted = 0;
+  const harness = createContext(createPage({ popupPath: () => (path === "/IESC/loading" ? path : undefined) }));
+  const intervention = {
+    safePoint: async () => {
+      consulted += 1;
+      path = "/IESC/ready";
+      return "none" as const;
+    },
+    deadlineExpired: async () => assert.fail("the popup reached its page before the deadline"),
+  };
+  await runEsun({ ...harness.context, intervention }, workflowInput({ attachedPreviewProducts: [] }));
+  assert.ok(consulted >= 1, "the popup's page wait is a safe point");
+  assert.equal(harness.committed.length, 1, "collection goes on from the page the popup reached");
+}));
+
+test("a card popup outside esunbank.com and esunbank.com.tw stops the read",() => withManagedSecret(async () => {
   for (const popupHost of ["esunbank.com.tw.example", "iesc.esunbank.com.example", "esunbank.co", "evilesunbank.com", "xesunbank.com.tw"]) {
     const harness = createContext(createPage({ popupHost }));
     await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
