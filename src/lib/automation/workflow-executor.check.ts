@@ -16,6 +16,8 @@ import {
 import type { WorkflowRunEvent } from "./run-event.ts";
 import { classifyFailure } from "./failure-classification.ts";
 import type { Page } from "playwright";
+import { frameScope, FrameScopeTimeoutError } from "../../workflows/frame-scope.ts";
+import { expectPageState } from "../../workflows/page-state-wait.ts";
 
 function ports(events: WorkflowRunEvent[]): WorkflowExecutorPorts {
   return {
@@ -571,6 +573,33 @@ test("a safe point runs on or resumes after Hand back, and an intervention that 
   }], ports([]));
   await without.run("browser-example", "run-none", null, new AbortController().signal);
   assert.equal(consulted, false, "outside the App no person can take over");
+});
+
+test("a collection wait whose deadline the host refuses fails the run on its step with a step-wait timeout", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const points: string[] = [];
+  const page = bankPage("https://bank.example/statements");
+  await assert.rejects(createWorkflowExecutor([{
+    id: "bank",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.event("collection", "started", "statement-query-started");
+      await context.browser.withPage(async (opened) => {
+        await expectPageState(frameScope(opened, context.signal), context.intervention, async () => null, "Timed out waiting for the statement table.", { timeoutMs: 200 });
+      });
+    },
+  }], {
+    ...ports(events),
+    browser: page.browser,
+    // A scheduled run: the host never pauses it.
+    intervention: { consult: async (_signal, at) => { points.push(at); return "none"; } },
+  }).run("bank", "run-collection-deadline", null, new AbortController().signal), FrameScopeTimeoutError);
+  assert.equal(points.at(-1), "deadline", "the expired wait asked the host to pause the run");
+  assert.ok(points.includes("safe-point"), "the wait was a safe point while it polled");
+  assert.deepEqual(events.at(-1)?.stoppedAt, {
+    step: "statement-query-started",
+    page: { kind: "step-wait-timeout", host: "bank.example", path: "/statements" },
+  });
 });
 
 test("an expired deadline consults the host at its own point and hears the same answers as a safe point", async () => {
