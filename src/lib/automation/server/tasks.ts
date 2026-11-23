@@ -15,6 +15,10 @@ import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureEnabled,
 } from "./packaged-browser-fixture.ts";
+import {
+  RUN_INTERVENTION_FIXTURE_TASK_ID,
+  runInterventionFixtureEnabled,
+} from "./run-intervention-fixture.ts";
 
 export type {
   AutomationCredentialGroup,
@@ -129,7 +133,22 @@ export function automationTasksForEnvironment(
       maxAttempts: 1,
     }))
     : [];
-  return [...coreAutomationTasks, ...previewTasks, ...packagedBrowserFixtureTasks];
+  // Test-only: the Electron/CDP check of the Run live view and intervention (ADR 0147).
+  const runInterventionFixtureTasks: readonly AutomationTask[] =
+    runInterventionFixtureEnabled(environment)
+    ? [{
+      id: RUN_INTERVENTION_FIXTURE_TASK_ID,
+      label: "Run intervention fixture",
+      displayName: { en: "Run intervention fixture", "zh-TW": "Run intervention fixture" },
+      workflowId: RUN_INTERVENTION_FIXTURE_TASK_ID,
+      kind: "crawler",
+      integrationNamespaces: [],
+      credentialKeys: [],
+      dependencies: [],
+      maxAttempts: 1,
+    }]
+    : [];
+  return [...coreAutomationTasks, ...previewTasks, ...packagedBrowserFixtureTasks, ...runInterventionFixtureTasks];
 }
 
 export const AUTOMATION_TASKS: readonly AutomationTask[] = automationTasksForEnvironment();
