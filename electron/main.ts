@@ -380,6 +380,13 @@ async function start() {
     && cdpFixture
     && process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1";
   if (cdpVerificationFixture) assertDisposableVerificationFixtureRoot(userData);
+  // The Run intervention fixture source is test-only: never in a packaged App, never outside the
+  // disposable CDP fixture launch, never against a user-data root that is not disposable.
+  const cdpInterventionFixture = Boolean(process.env.OCTOPUSBEAK_CDP_INTERVENTION_FIXTURE_URL);
+  if (cdpInterventionFixture) {
+    if (app.isPackaged || !cdpFixture) throw new Error("Run intervention fixture needs the unpackaged CDP fixture launch.");
+    assertDisposableVerificationFixtureRoot(userData);
+  }
   const cdpTdccFixture = !app.isPackaged
     && cdpFixture
     && process.env.OCTOPUSBEAK_CDP_TDCC_FIXTURE === "1";
@@ -422,6 +429,8 @@ async function start() {
             await seedCdpRuntimeFixture(runtime, operationalRuntime.provider, {
               verification: cdpVerificationFixture,
               unknownActiveTask: unknownActiveRuntimeFixture,
+              scheduledInterventionRun: cdpInterventionFixture
+                && process.env.OCTOPUSBEAK_CDP_INTERVENTION_SCHEDULED === "1",
             });
           }
         })

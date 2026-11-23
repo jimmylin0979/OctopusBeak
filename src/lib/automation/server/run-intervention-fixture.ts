@@ -16,7 +16,7 @@ export const RUN_INTERVENTION_FIXTURE_TASK_ID = "run-intervention-fixture";
 export const RUN_INTERVENTION_FIXTURE_TARGET = "#fixture-target";
 export const RUN_INTERVENTION_FIXTURE_OVERLAY = "#fixture-overlay";
 /** The step's wait expires this soon, so the check does not wait a minute. */
-export const RUN_INTERVENTION_FIXTURE_WAIT_MS = 2_000;
+export const RUN_INTERVENTION_FIXTURE_WAIT_MS = 6_000;
 export const RUN_INTERVENTION_FIXTURE_FAILURE = "Timed out waiting for the fixture page.";
 
 export function runInterventionFixtureEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
