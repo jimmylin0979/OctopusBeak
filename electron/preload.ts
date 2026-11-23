@@ -9,6 +9,7 @@ import type {
 } from "../src/lib/desktop/api.ts";
 import type { AppUpdateView } from "../src/lib/settings/app-updates.ts";
 import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
+import type { RunLiveViewEnd, RunLiveViewFrame } from "../src/lib/automation/run-intervention.ts";
 
 /** The payload each main-process broadcast carries to every window (electron/broadcast.ts). */
 export type OctopusBeakPushEvents = {
@@ -17,6 +18,17 @@ export type OctopusBeakPushEvents = {
   "automation:notification-target-requested": undefined;
   "appUpdates:changed": AppUpdateView;
 };
+
+/**
+ * What main sends only to the window that opened a Run live view (ADR 0147),
+ * never to every window.
+ */
+export type OctopusBeakLiveViewEvents = {
+  "automation:live-view-frame": RunLiveViewFrame;
+  "automation:live-view-ended": RunLiveViewEnd;
+};
+
+export type OctopusBeakLiveViewChannel = keyof OctopusBeakLiveViewEvents;
 
 /** The one fire-and-forget channel the renderer sends on. */
 export type OctopusBeakSendChannel = "display:setScale";
@@ -31,11 +43,13 @@ const DATA_VIEW_CHANNELS = {
 
 export type OctopusBeakDataViewChannels = typeof DATA_VIEW_CHANNELS;
 
-function onPush<Channel extends keyof OctopusBeakPushEvents>(
+type MainEvents = OctopusBeakPushEvents & OctopusBeakLiveViewEvents;
+
+function onPush<Channel extends keyof MainEvents>(
   channel: Channel,
-  listener: (payload: OctopusBeakPushEvents[Channel]) => void,
+  listener: (payload: MainEvents[Channel]) => void,
 ) {
-  const handler = (_event: Electron.IpcRendererEvent, payload: OctopusBeakPushEvents[Channel]) => {
+  const handler = (_event: Electron.IpcRendererEvent, payload: MainEvents[Channel]) => {
     listener(payload);
   };
   ipcRenderer.on(channel, handler);
@@ -156,6 +170,12 @@ const INVOKE_CHANNELS = {
     takeNotificationTarget: "automation:takeNotificationTarget",
     previewStructureReport: "automation:previewStructureReport",
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
+    openLiveView: "automation:openLiveView",
+    closeLiveView: "automation:closeLiveView",
+    takeOverRun: "automation:takeOverRun",
+    handBackRun: "automation:handBackRun",
+    giveUpRun: "automation:giveUpRun",
+    interventionInput: "automation:interventionInput",
   },
   manualAssets: {
     apply: "financial.manualAssets.apply",
@@ -193,6 +213,8 @@ const api: OctopusBeakApi = {
     ...invokers("automation"),
     onRuntimeChanged: (listener) => onPush("automation:runtime-changed", listener),
     onNotificationTargetRequested: (listener) => onPush("automation:notification-target-requested", () => listener()),
+    onLiveViewFrame: (listener) => onPush("automation:live-view-frame", listener),
+    onLiveViewEnded: (listener) => onPush("automation:live-view-ended", listener),
   },
   data: {
     ...invokers("data"),

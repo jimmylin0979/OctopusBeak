@@ -7,6 +7,12 @@ import {
 import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
+import {
+  INTERVENTION_POINTS,
+  RUN_INTERVENTION_RESOLUTIONS,
+  type InterventionPoint,
+  type RunInterventionAnswer,
+} from "../run-intervention.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import {
@@ -133,7 +139,7 @@ function validHumanContract(value: unknown): value is HumanAssistanceContractInp
 
 function validEvent(value: unknown): value is WorkflowRunEvent {
   if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "outcome", "code", "occurredAt"], [
-    "signal", "completed", "total", "activity", "statementType", "retrying",
+    "signal", "completed", "total", "activity", "statementType", "retrying", "stoppedAt",
   ])) return false;
   if (
     typeof value.runId !== "string"
@@ -179,19 +185,58 @@ export type HostCalls = {
     result: TdccSessionLease | TdccSignInLease;
   };
   tdccSessionRotated: { request: Readonly<{ session: TdccIssuedSession }>; result: void };
+  /**
+   * A workflow safe point (ADR 0147). The host answers `none` at once unless
+   * the person pressed Take over; then the run pauses and the call waits until
+   * the intervention resolves. It carries no page data and no targets.
+   */
+  intervention: {
+    request: Readonly<{ at: InterventionPoint }>;
+    result: Readonly<{ resolution: RunInterventionAnswer }>;
+  };
 };
+
+/** Where the workflow consults the host: the Source sign-in step's waits and the shared expected-page-state wait (expectPageState). */
+export type { InterventionPoint } from "../run-intervention.ts";
+const interventionPoints = new Set<string>(INTERVENTION_POINTS);
+const interventionAnswers = new Set<string>(["none", ...RUN_INTERVENTION_RESOLUTIONS]);
+
+/**
+ * The intervention host call's bounds limit how often a run may consult it,
+ * not how often it pauses (the Active run allows one pause and three more,
+ * MAX_RUN_INTERVENTION_PAUSES).
+ *
+ * Safe points are bounded by rate, not by a lifetime count: every wait of a
+ * manual run, sign-in and collection alike, is one, and the run's port
+ * consults about once a second (SAFE_POINT_CONSULT_MS), so any count would
+ * run out in a long enough run. The bucket refills at twice that rate and
+ * holds a few seconds of slack, so a runaway worker is refused within seconds.
+ *
+ * Expired deadlines keep a lifetime count: each one either spends one of the
+ * run's pauses or is followed by its step's failure.
+ */
+export const INTERVENTION_SAFE_POINT_RATE = Object.freeze({ burst: 32, perSecond: 2 });
+export const INTERVENTION_DEADLINES_PER_RUN = 128;
 
 export type HostCallMethod = keyof HostCalls;
 export type HostCallRequest<M extends HostCallMethod> = HostCalls[M]["request"];
 export type HostCallResult<M extends HostCallMethod> = HostCalls[M]["result"];
 
 /** Calls in one lane run one at a time; the worker queues them and the host refuses an overlap. */
-export type HostCallLane = "acknowledged" | "assistance" | "tdcc";
+export type HostCallLane = "acknowledged" | "assistance" | "tdcc" | "intervention";
 
 type RequestContract<M extends HostCallMethod> = Readonly<{
   kind: "request";
   lane: HostCallLane;
+  /** How many requests a run may send, counting none that `rate` covers. */
   maxPerRun: number;
+  /**
+   * A token bucket for requests a workflow sends on a timer, which a lifetime
+   * count would exhaust in a long run: it starts full at the run's first such
+   * request, holds `burst` and refills at `perSecond`. A request beyond it is
+   * a protocol failure.
+   */
+  rate?: Readonly<{ burst: number; perSecond: number; covers(request: HostCallRequest<M>): boolean }>;
   /**
    * "drop": a stop abandons the call; the host races it against the stop and
    * does not answer, and the worker stops waiting. "answer" (ADR 0056): the
@@ -271,6 +316,23 @@ export const HOST_CALL_CONTRACTS: Readonly<{ [M in HostCallMethod]: HostCallCont
       return value as HostCallResult<"tdccSession">;
     },
   },
+  intervention: {
+    kind: "request",
+    lane: "intervention",
+    maxPerRun: INTERVENTION_DEADLINES_PER_RUN,
+    rate: { ...INTERVENTION_SAFE_POINT_RATE, covers: (request) => request.at === "safe-point" },
+    // A stop, Give up included, abandons the pause; the workflow stops waiting.
+    duringStop: "drop",
+    parseRequest(value) {
+      if (!isRecord(value) || !exactKeys(value, ["at"]) || typeof value.at !== "string" || !interventionPoints.has(value.at)) invalid();
+      return value as HostCallRequest<"intervention">;
+    },
+    parseResult(value) {
+      if (!isRecord(value) || !exactKeys(value, ["resolution"])
+        || typeof value.resolution !== "string" || !interventionAnswers.has(value.resolution)) invalid();
+      return value as HostCallResult<"intervention">;
+    },
+  },
   tdccSessionRotated: {
     kind: "notify",
     coalesce: "latest",
@@ -310,6 +372,8 @@ export type HostCallDispatcherOptions = Readonly<{
   settled(): boolean;
   post(frame: HostCallReplyFrame): void;
   protocolFailure(): void;
+  /** The clock a contract's `rate` refills by; defaults to `Date.now`. */
+  now?: () => number;
 }>;
 
 export type HostCallDispatcher = Readonly<{
@@ -326,7 +390,28 @@ export function createHostCallDispatcher(options: HostCallDispatcherOptions): Ho
   const counts = new Map<HostCallMethod, number>();
   const busy = new Map<HostCallLane, Readonly<{ callId: string; duringStop: "drop" | "answer" }>>();
   const latest = new Map<HostCallMethod, unknown>();
+  const now = options.now ?? Date.now;
+  const buckets = new Map<HostCallMethod, { tokens: number; at: number }>();
   let flush: ReturnType<typeof setImmediate> | undefined;
+
+  /** Spend one request against the contract's bound; false when the run has used it up. */
+  const admit = (method: HostCallMethod, contract: RequestContract<HostCallMethod>, request: unknown): boolean => {
+    const rate = contract.rate;
+    if (rate?.covers(request as never)) {
+      const at = now();
+      const bucket = buckets.get(method) ?? { tokens: rate.burst, at };
+      bucket.tokens = Math.min(rate.burst, bucket.tokens + (Math.max(0, at - bucket.at) / 1_000) * rate.perSecond);
+      bucket.at = at;
+      buckets.set(method, bucket);
+      if (bucket.tokens < 1) return false;
+      bucket.tokens -= 1;
+      return true;
+    }
+    const count = counts.get(method) ?? 0;
+    if (count >= contract.maxPerRun) return false;
+    counts.set(method, count + 1);
+    return true;
+  };
 
   // A stop abandons every "drop" call, so a lane it held is free for an "answer" call.
   options.signal.addEventListener("abort", () => {
@@ -396,12 +481,10 @@ export function createHostCallDispatcher(options: HostCallDispatcherOptions): Ho
         flush ??= setImmediate(writeLatest);
         return;
       }
-      const count = counts.get(method) ?? 0;
-      if (busy.has(contract.lane) || count >= contract.maxPerRun) {
+      if (busy.has(contract.lane) || !admit(method, contract, request)) {
         options.protocolFailure();
         return;
       }
-      counts.set(method, count + 1);
       const call = { callId: frame.callId, duringStop: contract.duringStop };
       busy.set(contract.lane, call);
       const release = () => {

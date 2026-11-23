@@ -3,6 +3,7 @@ import type { AutomationTaskRun } from "./store.ts";
 import type { AutomationTaskStatus } from "../types.ts";
 import type { WorkflowStage } from "../workflow-executor.ts";
 import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
+import { runTrigger } from "../run-intervention.ts";
 import type {
   AutomationPageModel,
   AutomationTaskPrerequisiteNotice,
@@ -55,6 +56,8 @@ function pageWorkflowEvents(
       occurredAt: event.occurredAt,
       ...(event.completed === undefined ? {} : { completed: event.completed as number }),
       ...(event.total === undefined ? {} : { total: event.total as number }),
+      // Checked by hasValidRunEventMeaning: only a failed event's step and page host and path.
+      ...(event.stoppedAt === undefined ? {} : { stoppedAt: event.stoppedAt }),
     } as WorkflowRunEvent];
   }).slice(-MAX_WORKFLOW_EVENTS);
 }
@@ -133,6 +136,7 @@ export function buildAutomationPageModel(input: {
       humanSession: null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,
       forceTerminateAvailable: false,
+      runTrigger: run ? runTrigger(run.scheduledAtUtc) : null,
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       credentialsReady,

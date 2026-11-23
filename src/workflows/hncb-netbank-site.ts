@@ -2,6 +2,8 @@ import { errors, type Frame, type Locator, type Page, type Response } from "play
 import { FRAME_SCOPE_TIMEOUT_MS, frameScope, FrameScopeTimeoutError, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
+import { expectPageState } from "./page-state-wait.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 
 export const HNCB_NETBANK_ORIGIN = "https://netbank.hncb.com.tw";
 /** The servlet every HNCB transaction is requested through. */
@@ -52,6 +54,8 @@ export type HncbReadPage = Readonly<{ scope: BrowserScope; response: ProviderRes
  */
 export type HncbNetbankSite = Readonly<{
   frames: FrameScope;
+  /** The run's Run intervention points, for the product's own page waits (ADR 0147). */
+  intervention: WorkflowInterventionPort | undefined;
   /** The frame that shows each transaction; a missing frame times out after 60 s unless the caller says otherwise. */
   main(options?: Readonly<{ timeoutMs?: number }>): Promise<Frame>;
   /** Open a transaction's page from any signed-in page. */
@@ -66,7 +70,8 @@ export type HncbNetbankSite = Readonly<{
   settle(): Promise<void>;
 }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal }>;
+/** The run's signal and, for a manual run, its Run intervention points, which the site's page waits consult (ADR 0147). */
+type SiteContext = Readonly<{ signal: AbortSignal; intervention?: WorkflowInterventionPort }>;
 
 export function isHncbTrxDispatcherUrl(url: string): boolean {
   try {
@@ -86,7 +91,17 @@ export function hncbTrxUrl(trx: string, state: string): string {
 export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSite {
   const frames = frameScope(page, context.signal);
 
-  const main = (options?: Readonly<{ timeoutMs?: number }>) => frames.frame(MAIN_FRAME, options);
+  const { intervention } = context;
+
+  // The site's pages and frames are expected page states (ADR 0147): a manual run pauses when one never appears.
+  const main = (options?: Readonly<{ timeoutMs?: number }>) =>
+    expectPageState(
+      frames,
+      intervention,
+      async () => page.frame({ name: MAIN_FRAME }),
+      `Timed out waiting for frame "${MAIN_FRAME}".`,
+      options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
+    );
 
   // Playwright's own timeout becomes the frame scope's, naming what the site waited for.
   const waited = async <T>(wait: Promise<T>, description: string): Promise<T> => {
@@ -121,7 +136,7 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
 
   const control = (step: HncbMenuStep): Promise<Locator> => {
     const matcher = new RegExp(`^\\s*${step.label}\\s*$`, "u");
-    return frames.until(async () => {
+    return expectPageState(frames, intervention, async () => {
       const scopes = step.frame ? [page.frame({ name: step.frame })].filter((frame) => frame !== null) : frames.scopes();
       for (const scope of scopes) {
         const controls = scope.locator("a, button").filter({ hasText: matcher });
@@ -160,7 +175,7 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
   };
 
   const showing = (route: Pick<HncbRoute, "description" | "ready">) =>
-    frames.until(async () => {
+    expectPageState(frames, intervention, async () => {
       for (const scope of frames.scopes()) {
         if (await route.ready(scope)) return scope;
       }
@@ -173,6 +188,7 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
 
   const site: HncbNetbankSite = {
     frames,
+    intervention,
     main,
     open: async (route) => {
       const reply = await goto(hncbTrxUrl(route.via.trx, route.via.state), route.description);

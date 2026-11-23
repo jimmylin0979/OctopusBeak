@@ -8,7 +8,7 @@ import {
   WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS,
   type WorkflowProgressStatementType,
 } from "../workflow-executor.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
+import { isValidRunStop, type RunStop, type WorkflowRunEvent } from "../run-event.ts";
 import {
   pgliteWorkflowAdmissionReason,
   type PGliteWorkflowAdmissionReason,
@@ -89,6 +89,8 @@ export type WorkflowFailureDiagnostic = Readonly<{
   statementType?: WorkflowProgressStatementType;
   operation?: string;
   reason?: PGliteWorkflowAdmissionReason;
+  /** The step and page kind the run stopped on (ADR 0147). Not sent in an Error report. */
+  stoppedAt?: RunStop;
   error: SafeWorkflowFailureError;
 }>;
 
@@ -101,6 +103,7 @@ export type WorkflowFailureDiagnosticInput = Readonly<{
   statementType?: WorkflowProgressStatementType;
   operation?: string;
   reason?: unknown;
+  stoppedAt?: unknown;
   error?: unknown;
   safeError?: unknown;
 }>;
@@ -330,6 +333,7 @@ export function buildWorkflowFailureDiagnostic(
     ...(input.statementType ? { statementType: input.statementType } : {}),
     ...(operation ? { operation } : {}),
     ...(reason ? { reason } : {}),
+    ...(isValidRunStop(input.stoppedAt) ? { stoppedAt: input.stoppedAt } : {}),
     error: safeError,
   };
 }

@@ -17,8 +17,10 @@ import {
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type ActiveAutomationTaskRun,
+  type InterventionTimers,
   type TaskRunReport,
 } from "./active-task-run.ts";
+import { createRunInterventionQueue } from "./run-intervention-queue.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -81,11 +83,15 @@ export function createAutomationRunner(options: Readonly<{
   settings: AutomationSettingsStore;
   userDataDirectory: string;
   forceQuitAvailableAfterMs?: number;
+  /** The timers a paused Run intervention's 5 minutes run on; checks shorten them. */
+  interventionTimers?: InterventionTimers;
 }>) {
   const { runtime, provider } = options;
   const runExecution = options.runExecution
     ?? createTaskRunExecution(options.executionHost ?? chromiumThreadHost);
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
+  // One line for every run this host opens: only one Run intervention is active at a time (ADR 0147).
+  const interventionQueue = createRunInterventionQueue();
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;
   let holds = 0;
@@ -182,6 +188,8 @@ export function createAutomationRunner(options: Readonly<{
       persistence: provider.automation,
       runtime,
       forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs,
+      ...(options.interventionTimers ? { interventionTimers: options.interventionTimers } : {}),
+      interventionQueue,
     });
   }
 

@@ -1,6 +1,6 @@
 # Solver-only verification
 
-Status: accepted
+Status: accepted; its absence of any person-controlled path is partly superseded by [ADR 0147](0147-manual-runs-offer-a-live-view-and-run-intervention.md), which adds a Run live view and Run intervention for manual runs. Verification stages stay solver-only.
 
 ## Decision
 

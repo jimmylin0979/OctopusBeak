@@ -26,6 +26,14 @@ import type {
   DataVersionSnapshot,
 } from "$lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "$lib/shared-shell/block-load-state.ts";
+import type {
+  RunInterventionInput,
+  RunInterventionState,
+  RunLiveViewEnd,
+  RunLiveViewFrame,
+  RunTrigger,
+  TakeOverResult,
+} from "$lib/automation/run-intervention.ts";
 import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
@@ -57,6 +65,10 @@ export type AutomationRuntimeTaskSnapshot = {
   taskId: string;
   runId: string | null;
   status: AutomationRuntimeTaskStatus;
+  /** Who started the run; only a manual run offers a Run live view (ADR 0147). Absent for a row with no run. */
+  trigger?: RunTrigger;
+  /** A manual run's Run intervention, while it has one (ADR 0147). */
+  intervention?: RunInterventionState;
   attempt: number;
   maxAttempts: number;
   progress: AutomationTaskProgress;
@@ -278,6 +290,23 @@ export type OctopusBeakApi = {
     onNotificationTargetRequested(listener: () => void): () => void;
     previewStructureReport(taskId: string): Promise<string | null>;
     openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
+    /**
+     * Run live view (ADR 0147): watch a running manual run's page. Opening a
+     * view ends any other; its frames reach only this window, in memory.
+     */
+    openLiveView(taskId: string, runId: string): Promise<{ viewId: string }>;
+    closeLiveView(viewId: string): Promise<void>;
+    onLiveViewFrame(listener: (frame: RunLiveViewFrame) => void): () => void;
+    onLiveViewEnded(listener: (end: RunLiveViewEnd) => void): () => void;
+    /**
+     * Run intervention (ADR 0147), on the open view's run. Take over pauses
+     * it at its next safe point; Hand back resumes it; Give up cancels it.
+     */
+    takeOverRun(viewId: string): Promise<TakeOverResult>;
+    handBackRun(viewId: string): Promise<boolean>;
+    giveUpRun(viewId: string): Promise<boolean>;
+    /** One pointer or key action on the paused page; refused unless the run is paused for the person. */
+    interventionInput(viewId: string, input: RunInterventionInput): Promise<void>;
   };
   /** Manual Assets (ADR 0087); the worker parses every command again before it runs. */
   manualAssets: FinancialBridge<"manualAssets">;

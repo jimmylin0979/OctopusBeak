@@ -133,7 +133,9 @@ async function runCathayAllWorkflow(
 ): Promise<WorkflowRunResult> {
   return await context.browser.withPage(async (page) => {
     // The session belongs to no product.
-    const source: CathayStrictSourceOptions = { reader: sourceReader(context), signal: context.signal };
+    // Collection's expected-page-state waits pause a manual run through the run's intervention points (ADR 0147).
+    const intervention = context.intervention ? { intervention: context.intervention } : {};
+    const source: CathayStrictSourceOptions = { reader: sourceReader(context), signal: context.signal, ...intervention };
     await signInCathayForApp(context, page, cathaySignInPlan(input.credentials, context.event));
 
     const createSession =
@@ -145,8 +147,11 @@ async function runCathayAllWorkflow(
       context.signal,
     );
     const observedAt = context.now();
+    /** A product's reads use its own reader (ADR 0116) and the run's intervention points. */
+    const productSource = (product: ProductCollectionHandle): CathayStrictSourceOptions =>
+      ({ reader: product.reader, signal: product.signal, ...intervention });
     const acquireCurrentBalances = (kind: "domestic" | "foreign", product: ProductCollectionHandle) => () =>
-      readCathayCurrentDepositBalanceResponse(page, kind, product);
+      readCathayCurrentDepositBalanceResponse(page, kind, productSource(product));
 
     const assertSession = async () => {
       // Cathay's GetJWT request is the authenticated session health check.
@@ -187,7 +192,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, product, observedAt, cathayQueryPeriod(product.collectionPeriod())),
+          )(page, input, session, productSource(product), observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
         if (domestic.accounts.length === 0) {
@@ -238,7 +243,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, product, () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
+          )(page, input, session, productSource(product), () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
           context.signal,
         );
         if (

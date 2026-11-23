@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { APIRequestContext, Page } from "playwright";
 import { launchCheckBrowser } from "../check-browser.fixtures.ts";
-import { frameScope } from "../../../workflows/frame-scope.ts";
+import { frameScope, FrameScopeTimeoutError } from "../../../workflows/frame-scope.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 import {
   captureTypedReport,
@@ -129,6 +129,53 @@ test("cancelling the run stops a Yuanta report read at each of its waits", async
     await readCancelledAfter("hang");
     await assertCancelledPromptly("error", errorLanding);
     await readCancelledAfter("no-logout");
+  } finally {
+    await browser.close();
+  }
+});
+
+// ADR 0147: the report page showing the signed-in marker is an expected page
+// state. A manual run whose page never shows it pauses for the person; a
+// scheduled run fails the step with a step-wait timeout.
+test("a Yuanta report page that never shows the signed-in marker pauses a manual run", async () => {
+  const browser = await launchCheckBrowser();
+  try {
+    const page = await browser.newPage();
+    let logoutShown = false;
+    await page.route("https://global.yuanta.com.tw/**", (route) => route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `${logoutShown ? '<button id="btnLogout">Logout</button>' : ""}<script>var currAssetType = 'Stock';</script>`,
+    }));
+    await page.goto("https://global.yuanta.com.tw/NexusWebTrade/Main/Index");
+    let deadlines = 0;
+    const handsBack = {
+      safePoint: async () => "none" as const,
+      deadlineExpired: async () => {
+        deadlines += 1;
+        logoutShown = true;
+        await page.reload();
+        return "handed-back" as const;
+      },
+    };
+    const report = await captureTypedReport(page, "Stock", { index: -1 }, reportProduct(), {
+      intervention: handsBack,
+      timeoutMs: 300,
+    });
+    assert.equal(report.currentAssetType, "Stock");
+    assert.equal(deadlines, 1);
+
+    logoutShown = false;
+    await page.reload();
+    const refused = { safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const };
+    for (const intervention of [refused, undefined]) {
+      await assert.rejects(
+        captureTypedReport(page, "Stock", { index: -1 }, reportProduct(), {
+          ...(intervention ? { intervention } : {}),
+          timeoutMs: 300,
+        }),
+        (error: unknown) => error instanceof FrameScopeTimeoutError,
+      );
+    }
   } finally {
     await browser.close();
   }

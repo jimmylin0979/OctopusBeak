@@ -984,6 +984,25 @@ try {
   const pendingOptions = readFubonDepositAccountOptions(selectorSite(cancelledSelector.signal));
   setTimeout(() => cancelledSelector.abort(new Error("option read cancelled")), 300);
   await assert.rejects(pendingOptions, /option read cancelled/u, "a cancelled run stops inside the account selector wait");
+
+  // ADR 0147: the account selector is an expected page state. A manual run
+  // pauses when it never renders, and after Hand back reads the selector the
+  // person left on the page.
+  await selectorPage.setContent("<p>載入中</p>");
+  let selectorDeadlines = 0;
+  const handedBackOptions = await readFubonDepositAccountOptions(fubonEbankSite(selectorPage, {
+    ...siteContext(),
+    intervention: {
+      safePoint: async () => "none",
+      deadlineExpired: async () => {
+        selectorDeadlines += 1;
+        await showAccountSelector([{ value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" }]);
+        return "handed-back";
+      },
+    },
+  }), { timeoutMs: 300 });
+  assert.deepEqual(handedBackOptions, [{ value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" }]);
+  assert.equal(selectorDeadlines, 1);
   await selectorPage.close();
 
   // A failed option read is not swallowed into a shorter account list.

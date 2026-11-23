@@ -37,7 +37,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function dispatcher(handlers: HostCallHandlers) {
+function dispatcher(handlers: HostCallHandlers, now?: () => number) {
   const stop = new AbortController();
   const replies: HostCallReplyFrame[] = [];
   let failures = 0;
@@ -49,6 +49,7 @@ function dispatcher(handlers: HostCallHandlers) {
     settled: () => settled,
     post: (frame) => replies.push(frame),
     protocolFailure: () => { failures += 1; },
+    ...(now ? { now } : {}),
   });
   return {
     channel,
@@ -66,6 +67,84 @@ test("every request contract names a lane and a cap, and only acknowledgements a
     if (contract.failureCode) assert.equal(contract.lane, "acknowledged", `${method} acknowledges`);
   }
   assert.equal(HOST_CALL_CONTRACTS.commitAttempt.kind === "request" && HOST_CALL_CONTRACTS.commitAttempt.duringStop, "answer");
+});
+
+test("the intervention host call has its own lane, a bound on safe-point consults, and a stop abandons it", async () => {
+  const contract = HOST_CALL_CONTRACTS.intervention;
+  assert.equal(contract.kind, "request");
+  if (contract.kind !== "request") return;
+  assert.equal(contract.lane, "intervention");
+  assert.equal(contract.duringStop, "drop");
+  assert.equal(contract.failureCode, undefined, "a failed intervention is a protocol failure, never a typed answer");
+  assert.ok(Number.isFinite(contract.maxPerRun));
+
+  assert.deepEqual(contract.parseRequest({ at: "safe-point" }), { at: "safe-point" });
+  // A step's expired deadline asks the host to pause the run on its own (ADR 0147).
+  assert.deepEqual(contract.parseRequest({ at: "deadline" }), { at: "deadline" });
+  for (const invalid of [{}, { at: "anywhere" }, { at: "deadline", step: "sign-in" },{ at: "safe-point", text: "typed" }, null]) {
+    assert.throws(() => contract.parseRequest(invalid), `${JSON.stringify(invalid)} is refused`);
+  }
+  for (const resolution of ["none", "handed-back", "given-up", "timed-out"]) {
+    assert.deepEqual(contract.parseResult({ resolution }, { at: "safe-point" }), { resolution });
+  }
+  assert.throws(() => contract.parseResult({ resolution: "entered" }, { at: "safe-point" }));
+  assert.throws(() => contract.parseResult({ resolution: "none", input: "x" }, { at: "safe-point" }));
+
+  const waiting = deferred<{ resolution: "handed-back" }>();
+  const host = dispatcher({ intervention: () => waiting.promise, event: () => undefined });
+  host.channel.receive(call("intervention", { at: "safe-point" }));
+  await settle();
+  assert.equal(host.channel.idle(), false);
+  host.channel.receive(call("event", { event }));
+  await settle();
+  assert.equal(host.replies.length, 1, "events still flow beside a pause");
+  host.stop();
+  waiting.resolve({ resolution: "handed-back" });
+  await settle();
+  assert.equal(host.replies.length, 1, "a stop abandons the pause unanswered");
+  assert.equal(host.channel.idle(), true);
+  assert.equal(host.failures(), 0);
+});
+
+test("a run's safe points are bounded by rate, so consulting once a second never runs out while a burst is refused", async () => {
+  let clock = 0;
+  const host = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  // Sign-in and every collection wait of a twelve-hour manual run, at the run's once-a-second consult.
+  for (let second = 0; second < 12 * 60 * 60; second += 1) {
+    clock = second * 1_000;
+    host.channel.receive(call("intervention", { at: "safe-point" }));
+    await settle();
+  }
+  await settle();
+  assert.equal(host.failures(), 0, "a long run is never refused");
+  assert.equal(host.replies.length, 12 * 60 * 60);
+
+  // A worker that consults as fast as it can is refused within its first second.
+  const runaway = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  let refusedAfter = 0;
+  for (let consult = 1; consult <= 1_000 && runaway.failures() === 0; consult += 1) {
+    runaway.channel.receive(call("intervention", { at: "safe-point" }));
+    await settle();
+    refusedAfter = consult;
+  }
+  assert.equal(runaway.failures(), 1);
+  assert.ok(refusedAfter <= 64, `refused after ${refusedAfter} consults`);
+});
+
+test("a run's expired deadlines are bounded by count, however long the run", async () => {
+  let clock = 0;
+  const host = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  let answered = 0;
+  for (let hour = 0; hour < 1_000 && host.failures() === 0; hour += 1) {
+    clock = hour * 3_600_000;
+    host.channel.receive(call("intervention", { at: "deadline" }));
+    await settle();
+    answered = host.replies.length;
+  }
+  assert.equal(host.failures(), 1, "deadlines do not refill with time");
+  assert.equal(answered, HOST_CALL_CONTRACTS.intervention.kind === "request" ? HOST_CALL_CONTRACTS.intervention.maxPerRun : -1);
+  // Each pausing deadline spends one of the run's pauses, and each other one fails its step.
+  assert.ok(answered >= 64);
 });
 
 test("an event is answered only after its handler resolves", async () => {
@@ -114,6 +193,27 @@ test("an invalid request, an unknown method, a repeated call id or a method with
   host.channel.receive(frame);
   assert.equal(host.failures(), 5);
   assert.equal(host.replies.length, 1);
+});
+
+test("a failure event reaches the host with its run stop, and a stop holding page data is a protocol failure", async () => {
+  const received: unknown[] = [];
+  const host = dispatcher({ event: async ({ event: recorded }) => { received.push(recorded); } });
+  const failed = { ...event, stage: "finalization", outcome: "failed", code: "run-failed" } as const;
+  const stoppedAt = { step: "login-submitted", page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" } };
+  host.channel.receive(call("event", { event: { ...failed, stoppedAt } }));
+  await settle();
+  assert.deepEqual(received, [{ ...failed, stoppedAt }]);
+  assert.equal(host.failures(), 0);
+
+  for (const refused of [
+    { ...failed, stoppedAt: { ...stoppedAt, page: { kind: "url", host: "bank.example", path: "/login?token=SECRET" } } },
+    { ...failed, stoppedAt: { ...stoppedAt, screenshot: "iVBORw0KGgo=" } },
+    { ...failed, stoppedAt: { ...stoppedAt, page: { ...stoppedAt.page, text: "BALANCE 12,345" } } },
+    { ...event, stoppedAt },
+  ]) host.channel.receive(call("event", { event: refused }));
+  await settle();
+  assert.equal(host.failures(), 4);
+  assert.equal(received.length, 1);
 });
 
 test("a call in a busy lane, or past its method's cap, is a protocol failure", async () => {

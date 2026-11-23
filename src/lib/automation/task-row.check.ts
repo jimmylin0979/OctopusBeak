@@ -7,6 +7,7 @@ import {
   applyOptimisticAutomationAction,
   automationTaskRowActions,
   parallelRunnableAutomationTaskIds,
+  runLiveViewAvailable,
 } from "./task-row.ts";
 
 function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
@@ -153,4 +154,28 @@ test("a source the store refuses until a Canonical Reset sends the person to del
 
   const running = applyAutomationRuntime(row({ canonicalResetRequired: true }), runtime({ status: "running", appWorkflowOutcome: refused }));
   assert.equal(running.primaryAction, "Cancel");
+});
+
+test("only a running manual run offers a live view", () => {
+  const viewable = (snapshot: Partial<AutomationRuntimeTaskSnapshot>) =>
+    runLiveViewAvailable(applyAutomationRuntime(row(), runtime(snapshot)));
+  assert.equal(viewable({ status: "running", trigger: "manual" }), true);
+  assert.equal(viewable({ status: "waiting_for_human", trigger: "manual" }), true, "a person may watch while the run verifies");
+  assert.equal(viewable({ status: "running", trigger: "scheduled" }), false, "a scheduled run never offers one");
+  assert.equal(viewable({ status: "running" }), false, "a run whose trigger is unknown offers none");
+  for (const status of ["queued", "preparing", "cancelling", "completed", "failed", "cancelled"] as const) {
+    assert.equal(viewable({ status, trigger: "manual" }), false, `a ${status} run offers none`);
+  }
+  assert.equal(viewable({ status: "running", trigger: "manual", runId: null }), false, "a view needs the run's id");
+  assert.equal(
+    runLiveViewAvailable(applyOptimisticAutomationAction(row(), "run")),
+    false,
+    "a run the runtime has not acknowledged offers none",
+  );
+});
+
+test("the row carries the run's Run intervention from the runtime, and drops it with the next snapshot that has none", () => {
+  const paused = applyAutomationRuntime(row(), runtime({ status: "running", trigger: "manual", intervention: "paused" }));
+  assert.equal(paused.runIntervention, "paused");
+  assert.equal(applyAutomationRuntime(paused, runtime({ status: "running", trigger: "manual" })).runIntervention, null);
 });

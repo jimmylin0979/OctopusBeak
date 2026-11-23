@@ -20,7 +20,7 @@ import {
   type CtbcCurrentDepositResponse,
   type ExistingCtbcFinancialCapture,
 } from "./ctbc-current-deposit-balances.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
@@ -30,6 +30,7 @@ import { CTBC_CREDENTIAL_FIELDS, CTBC_PRODUCTS, CTBC_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
@@ -351,11 +352,26 @@ function requireCtbcOk<T>(
   throw new Error(`CTBC resource ${resource} returned ${code}.`);
 }
 
-/** How the read half reads each provider reply: through the product's reader, failing inside its `validate`. */
+/**
+ * How the read half reads the provider: each reply through the product's
+ * reader, failing inside its `validate`, and each expected page state
+ * through the run's Run intervention points (ADR 0147).
+ */
 type CtbcReplyCheck = Readonly<{
   reader: ProviderResponseReader;
   validate: ProductCollectionHandle["validate"];
+  intervention: WorkflowInterventionPort | undefined;
 }>;
+
+/** Wait for an expected page state: a manual run pauses when it never appears (ADR 0147). */
+async function expectVisible(scope: FrameScope, reply: CtbcReplyCheck, locator: Locator, description: string): Promise<void> {
+  await expectPageState(
+    scope,
+    reply.intervention,
+    () => locator.isVisible().catch(() => false),
+    `Timed out waiting for ${description}.`,
+  );
+}
 
 /**
  * Read the next reply to `resource` that `trigger` causes. Every resource
@@ -536,7 +552,7 @@ async function selectDetailAccount(
 
   await scope.withSignal((signal) => detailAccountDropdown(scope.page).click({ signal }));
   const option = detailAccountOptions(scope.page).nth(account.optionIndex);
-  await scope.withSignal((signal) => option.waitFor({ state: "visible", timeout: 60_000, signal }));
+  await expectVisible(scope, reply, option, `the CTBC account selector's option for ${account.label}`);
 
   const [bootstrap, initialDetails] = await bootstrapAndInitialDetails(scope, reply, () =>
     scope.withSignal((signal) => option.click({ signal })));
@@ -619,7 +635,7 @@ async function captureVisibleMonthDetails(
   reply: CtbcReplyCheck,
 ): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
   const tabs = monthTabs(scope.page);
-  await scope.withSignal((signal) => tabs.first().waitFor({ state: "visible", timeout: 60_000, signal }));
+  await expectVisible(scope, reply, tabs.first(), "the CTBC statement's month tabs");
   const captures = [initialCapture];
   await reply.validate(() => detailsFromCapture(initialCapture));
 
@@ -689,6 +705,7 @@ export async function readCtbcDepositSource(
   const reply: CtbcReplyCheck = {
     reader: product.reader,
     validate: product.validate,
+    intervention: context.intervention,
   };
   const opened = await openDomesticDetailsPage(scope, reply);
   const allAccounts = await readDetailAccountOptions(
@@ -890,6 +907,7 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
       page,
       context.signal,
       product.reader,
+      context.intervention ? { intervention: context.intervention } : {},
     ),
   );
 };

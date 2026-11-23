@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
 import { frameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
@@ -16,6 +17,7 @@ import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
+const FOREIGN_STATEMENTS_PAGE = new URL(FOREIGN_STATEMENTS_URL);
 
 /** The dates Cathay's foreign API is asked for, as YYYY-MM-DD, both inclusive. */
 export type CathayForeignQueryRange = Readonly<{ startDate: string; endDate: string }>;
@@ -200,10 +202,34 @@ function currencyCodeOf(currency: CathayForeignCurrency): string | undefined {
   return currency.currency ?? currency.currencyCode;
 }
 
-async function openForeignStatementsPage(page: Page, signal: AbortSignal): Promise<void> {
-  const scope = frameScope(page, signal);
-  await scope.withSignal((signal) => page.goto(FOREIGN_STATEMENTS_URL, { waitUntil: "domcontentloaded", signal }));
-  await scope.withSignal((signal) => page.waitForLoadState("domcontentloaded", { signal }));
+/**
+ * Open the foreign statements page, whose origin the API reads are sent
+ * from. The page loading is an expected page state (ADR 0147): a manual run
+ * whose page never gets there pauses for the person, then goes on from the
+ * page they handed back.
+ */
+async function openForeignStatementsPage(
+  page: Page,
+  source: CathayStrictSourceOptions,
+  timeoutMs?: number,
+): Promise<void> {
+  const scope = frameScope(page, source.signal);
+  await scope.withSignal((signal) => page.goto(FOREIGN_STATEMENTS_URL, { waitUntil: "commit", signal }));
+  await expectPageState(
+    scope,
+    source.intervention,
+    async () => {
+      // A redirect to sign-in or elsewhere is not the page; a different case or a trailing slash still is.
+      const at = new URL(page.url());
+      const path = (url: URL) => url.pathname.replace(/\/+$/u, "").toLowerCase();
+      if (at.host !== FOREIGN_STATEMENTS_PAGE.host || path(at) !== path(FOREIGN_STATEMENTS_PAGE)) return false;
+      // A page still navigating has no document to read yet.
+      const ready = await page.evaluate(() => document.readyState).catch(() => "loading");
+      return ready !== "loading";
+    },
+    "Timed out waiting for the Cathay foreign statements page.",
+    timeoutMs === undefined ? {} : { timeoutMs },
+  );
 }
 
 function functionSeqNo(): string {
@@ -547,11 +573,13 @@ export async function collectCathayForeignFinancialCaptures(
     captureOccurrenceId?: string;
     client?: CathayForeignStatementsClient;
     preparePage?: (page: Page) => Promise<void>;
+    /** How long the foreign statements page may take to load; default 60 s. */
+    pageTimeoutMs?: number;
   }>,
 ): Promise<CathayForeignFinancialCollection> {
   const { signal } = options.source;
   signal.throwIfAborted();
-  await (options.preparePage ?? ((page) => openForeignStatementsPage(page, signal)))(page);
+  await (options.preparePage ?? ((page) => openForeignStatementsPage(page, options.source, options.pageTimeoutMs)))(page);
   const apiClient =
     options.client ?? new CathayForeignApiClient(page, options.source);
   const accounts = await apiClient.fetchForeignAccounts(

@@ -153,6 +153,33 @@ assert.equal(
   false,
   "only the typed event fields may cross into the renderer model",
 );
+{
+  // A failure event's run stop crosses into the renderer; one carrying page data does not cross at all.
+  const stoppedAt = { step: "login-submitted", page: { kind: "url", host: "bank.example", path: "/notice" } };
+  const failedEvent = {
+    runId: "typed-stopped-run", stage: "finalization", outcome: "failed", code: "run-failed",
+    occurredAt: "2026-06-30T01:00:03.000Z",
+  } as const;
+  const stoppedModel = buildAutomationPageModel({
+    tasks: AUTOMATION_TASKS,
+    latestRuns: {
+      [typedTask.id]: {
+        ...completedRun,
+        taskRunId: "typed-stopped-run",
+        taskId: typedTask.id,
+        status: "failed",
+        events: [
+          { ...failedEvent, stoppedAt },
+          { ...failedEvent, stoppedAt: { ...stoppedAt, page: { ...stoppedAt.page, path: "/notice?token=SECRET" } } },
+        ] as AutomationTaskRun["events"],
+      },
+    },
+    credentials: {},
+    active: false,
+    businessDate: "2026-06-30",
+  });
+  assert.deepEqual(stoppedModel.tasks.find((task) => task.id === typedTask.id)?.events, [{ ...failedEvent, stoppedAt }]);
+}
 const typedNoRecentEvents = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {

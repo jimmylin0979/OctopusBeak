@@ -13,6 +13,7 @@ import {
   type SpendingServiceForwards,
 } from "./ipc-channels.ts";
 import type { OctopusBeakDataViewChannels, OctopusBeakSendChannel } from "./preload.ts";
+import { liveViewSink } from "./live-view-sink.ts";
 import { broadcast } from "./broadcast.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
 import {
@@ -88,6 +89,8 @@ export function registerOctopusBeakIpc({
     ...spendingForwardHandlers(spending),
     "automation:selectCertificateFile": (event, locale) =>
       automation.selectCertificateFile(BrowserWindow.fromWebContents(event.sender), locale),
+    "automation:openLiveView": (event, taskId, runId) =>
+      automation.openLiveView(liveViewSink(event.sender), taskId, runId),
     "appUpdates:view": () => appUpdates.view(),
     "appUpdates:check": () => {
       appUpdates.check();

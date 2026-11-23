@@ -4,6 +4,8 @@
   import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
   import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
   import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
+  import RunLiveViewDialog from "$lib/automation/RunLiveViewDialog.svelte";
+  import { runLiveViewAvailable } from "$lib/automation/task-row.ts";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -18,6 +20,7 @@
     CircleCheck,
     CircleEllipsis,
     CloudDownload,
+    Eye,
     Info,
     KeyRound,
     Landmark,
@@ -66,6 +69,7 @@ import { onboardingTaskDisclosure } from "$lib/onboarding/state.ts";
   import {
     countsOutsideTdccExclusions,
     presentTaskRow,
+    runNeedsYou,
     tdccExclusionLines,
     workflowEventFailureLabel,
     type TaskRowViewContext,
@@ -188,6 +192,18 @@ import type {
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
+  /** The one Run live view open on this page (ADR 0147); opening another replaces it. */
+  let liveView: { taskId: string; runId: string } | null = null;
+  $: liveViewTask = liveView
+    ? live.tasks.find((task) => task.id === liveView?.taskId
+      && task.runId === liveView?.runId && runLiveViewAvailable(task)) ?? null
+    : null;
+  /** Runs paused in a Run intervention, each waiting for the person; the notice lists them. */
+  $: pausedTasks = live.tasks.filter(runNeedsYou);
+
+  function openLiveView(task: AutomationTaskRow) {
+    if (task.runId) liveView = { taskId: task.id, runId: task.runId };
+  }
   let copiedErrorTaskId: string | null = null;
   let copiedErrorTimer: ReturnType<typeof setTimeout> | undefined;
   let runDetailsOverview: OverviewPageDto | null = null;
@@ -869,6 +885,21 @@ import type {
     </section>
     </ProgressiveBlock>
 
+    {#if pausedTasks.length}
+      <section class="card run-intervention-notices" role="alert" aria-labelledby="run-intervention-notices-title">
+        <h2 id="run-intervention-notices-title">{$t.automation.liveView.pausedNoticeTitle}</h2>
+        {#each pausedTasks as task (task.id)}
+          <div class="run-intervention-notice">
+            <p>{$t.automation.liveView.pausedNotice(taskLabel(task, $locale))}</p>
+            <button class="button primary" type="button" aria-haspopup="dialog" onclick={() => openLiveView(task)}>
+              <Eye size={16} strokeWidth={2.2} aria-hidden="true" />
+              <span>{$t.automation.liveView.view}</span>
+            </button>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
     {@const detailsAutomation = selectAutomationBlockModel(pageModel, automationBlockData("details", data)?.automation, $state.runtime, $state.pendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
@@ -1048,7 +1079,7 @@ import type {
                     <div class="progress-description">
                       <span class="progress-copy" data-status={task.status}>{present(task).progressLabel}</span>
                       {#if present(task).showProgressStatus}
-                        <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
+                        <span class={`chip ${present(task).needsYou || present(task).waitingForYou ? "warn" : statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
                     {:else}
@@ -1095,6 +1126,18 @@ import type {
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
+                    {#if runLiveViewAvailable(task)}
+                      <button
+                        class="button secondary task-control live-view-action"
+                        type="button"
+                        aria-label={$t.automation.liveView.viewLabel(taskLabel(task, $locale))}
+                        aria-haspopup="dialog"
+                        onclick={() => openLiveView(task)}
+                      >
+                        <Eye size={16} strokeWidth={2.2} aria-hidden="true" />
+                        <span>{$t.automation.liveView.view}</span>
+                      </button>
+                    {/if}
                     {#if task.status === "cancelling" && task.forceTerminateAvailable}
                       <button
                         class="button danger task-control"
@@ -1854,6 +1897,21 @@ import type {
   </div>
 {/if}
 
+{#if liveView && liveViewTask}
+  {#key liveView.runId}
+    <RunLiveViewDialog
+      port={window.octopusBeak.automation}
+      taskId={liveView.taskId}
+      runId={liveView.runId}
+      taskLabel={taskLabel(liveViewTask, $locale)}
+      step={present(liveViewTask).progressLabel}
+      intervention={liveViewTask.runIntervention ?? null}
+      verifying={liveViewTask.status === "waiting_for_human"}
+      onClose={() => (liveView = null)}
+    />
+  {/key}
+{/if}
+
 {#if structureReport.open && structureReport.report}
   <StructureReportDialog
     report={structureReport.report}
@@ -1903,6 +1961,27 @@ import type {
     grid-template-columns: minmax(0, 1fr) auto;
     border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
     background: color-mix(in oklch, var(--accent-soft) 24%, var(--surface));
+  }
+
+  /* A run paused in a Run intervention (ADR 0147) reads like the other notices that need the person. */
+  .run-intervention-notices {
+    display: grid;
+    gap: 12px;
+    padding: 20px 30px;
+    border-color: color-mix(in oklch, var(--warn) 34%, var(--border));
+    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
+  }
+
+  .run-intervention-notices h2,
+  .run-intervention-notice p {
+    margin: 0;
+  }
+
+  .run-intervention-notice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px 22px;
   }
 
   .prerequisite-notices {

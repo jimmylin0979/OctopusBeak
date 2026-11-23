@@ -5,7 +5,7 @@ import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { Page, Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
@@ -14,7 +14,9 @@ import {
   type ProviderEvidence,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
-import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { FrameScopeTimeoutError, frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 import {
@@ -418,10 +420,19 @@ function formatResponseDiagnostics(
     .join("; ");
 }
 
-async function clickExactText(scope: FrameScope, text: string, timeoutMs: number): Promise<void> {
-  const control = scope.page.getByText(text, { exact: true }).first();
-  await scope.withSignal((signal) => control.waitFor({ state: "visible", timeout: timeoutMs, signal }));
-  await scope.withSignal((signal) => control.click({ signal }));
+/** The balance menu's controls are expected page states (ADR 0147): a manual run pauses when one never appears. */
+type PageStateWait = Readonly<{ scope: FrameScope; intervention: WorkflowInterventionPort | undefined; timeoutMs: number }>;
+
+async function exactText(wait: PageStateWait, text: string): Promise<Locator> {
+  const control = wait.scope.page.getByText(text, { exact: true }).first();
+  await expectPageState(
+    wait.scope,
+    wait.intervention,
+    () => control.isVisible().catch(() => false),
+    `Could not find CTBC control "${text}".`,
+    { timeoutMs: wait.timeoutMs },
+  );
+  return control;
 }
 
 /** The summary response CTBC's page triggers, before decoding. */
@@ -443,7 +454,11 @@ export async function readCtbcCurrentDepositBalanceResponse(
   page: Page,
   signal: AbortSignal,
   reader: ProviderResponseReader,
-  input: Readonly<{ timeoutMs?: number }> = {},
+  input: Readonly<{
+    timeoutMs?: number;
+    /** The run's Run intervention points, which the balance menu's waits consult (ADR 0147). */
+    intervention?: WorkflowInterventionPort;
+  }> = {},
 ): Promise<CtbcCurrentDepositResponse> {
   const scope = frameScope(page, signal);
   const timeoutMs = input.timeoutMs ?? 60_000;
@@ -456,13 +471,17 @@ export async function readCtbcCurrentDepositBalanceResponse(
   };
   page.on("response", listener);
   try {
+    // The menu is walked before the reply is awaited, so a pause there cannot outlast the reply wait.
+    const wait: PageStateWait = { scope, intervention: input.intervention, timeoutMs };
+    const menu = await exactText(wait, "臺幣/轉帳");
+    await scope.withSignal((signal) => menu.click({ signal }));
+    const summary = await exactText(wait, "臺幣存款概要");
     const captured = await reader.acquire(scope, CTBC_CURRENT_DEPOSIT_RESPONSE, {
       evidence: "json",
       request: (request) => requestResource(request.postData) === CONTRACT.requestResource,
       timeoutMs,
       trigger: async () => {
-        await clickExactText(scope, "臺幣/轉帳", timeoutMs);
-        await clickExactText(scope, "臺幣存款概要", timeoutMs);
+        await scope.withSignal((signal) => summary.click({ signal }));
         await scope.withSignal((signal) =>
           page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs, signal }));
       },
@@ -472,7 +491,8 @@ export async function readCtbcCurrentDepositBalanceResponse(
     return { evidence: captured.evidence, response: captured.response, requestPostData: captured.request.postData };
   } catch (error) {
     // A refused reply is the reader's validation failure; the candidates only explain a missing one.
-    if (signal.aborted || diagnostics.length === 0 || error instanceof ProviderResponseCheckError) throw error;
+    // A page-state wait that expired keeps its type, so the run stop records a step-wait timeout (ADR 0147).
+    if (signal.aborted || diagnostics.length === 0 || error instanceof ProviderResponseCheckError || error instanceof FrameScopeTimeoutError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `${message} CTBC balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,

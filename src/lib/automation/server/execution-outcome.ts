@@ -67,12 +67,19 @@ export function reportExecution(
   if (ending.kind === "host-error") {
     return {
       summary: summarizeInterruptedProductCollection(ending.error) ?? ending.workerSummary,
-      failure: classified(classifyFailure({ error: ending.error, events, stopped: ending.cancelled })),
+      failure: stoppedWhere(classified(classifyFailure({ error: ending.error, events, stopped: ending.cancelled })), events),
     };
   }
   const { outcome } = ending;
   return {
     summary: outcome.summary,
-    failure: outcome.status === "completed" ? null : workerFailure(outcome, events),
+    failure: outcome.status === "completed" ? null : stoppedWhere(workerFailure(outcome, events), events),
   };
+}
+
+/** A failure keeps the step and page its workflow's failure event names (ADR 0147). */
+function stoppedWhere(failure: TaskRunFailure, events: readonly WorkflowRunEvent[]): TaskRunFailure {
+  if (failure.code === "cancelled") return failure;
+  const stoppedAt = events.findLast((event) => event.stage === "finalization" && event.outcome === "failed")?.stoppedAt;
+  return stoppedAt ? { ...failure, stoppedAt } : failure;
 }

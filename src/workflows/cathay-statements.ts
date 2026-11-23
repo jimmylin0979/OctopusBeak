@@ -8,7 +8,7 @@ import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import { CATHAY_CREDENTIAL_FIELDS, CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
@@ -32,7 +32,12 @@ export type CathayCredentials = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS
  * signal every signed-in read yields to. The reader is the collecting
  * product's own, or the Source reader for the session, which no product owns.
  */
-export type CathayStrictSourceOptions = Readonly<{ reader: ProviderResponseReader; signal: AbortSignal }>;
+export type CathayStrictSourceOptions = Readonly<{
+  reader: ProviderResponseReader;
+  signal: AbortSignal;
+  /** The run's Run intervention points, which collection's expected-page-state waits consult (ADR 0147). */
+  intervention?: WorkflowInterventionPort;
+}>;
 
 const dateRangeSchema = z.enum([
   "one_week",

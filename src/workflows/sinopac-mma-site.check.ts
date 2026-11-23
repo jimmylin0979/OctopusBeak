@@ -230,3 +230,30 @@ test("cancelling the run interrupts a route whose page never requests its respon
     await assert.rejects(opening, (error: unknown) => error === CANCELLED);
     assert.ok(Date.now() - started < 2_000);
   }));
+
+test("a route's page showing is a Run intervention safe point (ADR 0147)", () =>
+  withMma(async (page) => {
+    let shown = false;
+    const consulted: string[] = [];
+    const site = sinopacMmaSite(page, {
+      ...context(),
+      intervention: {
+        // The person brings the page up, as during a Take over.
+        safePoint: async () => { consulted.push("safe-point"); shown = true; return "none"; },
+        deadlineExpired: async () => assert.fail("the page showed before the deadline"),
+      },
+    });
+    await site.open({
+      url: `${SINOPAC_MMA_ORIGIN}/mma/bank/transdetail/mma_transdetail.aspx`,
+      description: "the transaction page",
+      response: {
+        label: "accounts",
+        host: new URL(SINOPAC_MMA_ORIGIN).hostname,
+        endpoints: [{ path: ACCOUNT_ENDPOINT, method: "POST" }],
+        cacheControl: [],
+        providerDate: "optional",
+      },
+      ready: async () => shown,
+    }, reader);
+    assert.deepEqual(consulted, ["safe-point"]);
+  }));

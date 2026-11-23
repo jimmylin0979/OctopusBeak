@@ -1,6 +1,7 @@
 import type { AutomationRuntime } from "../src/lib/automation/server/automation-runtime.ts";
 import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
 import { createHumanAssistanceContract } from "../src/lib/automation/human-assistance.ts";
+import { RUN_INTERVENTION_FIXTURE_TASK_ID } from "../src/lib/automation/server/run-intervention-fixture.ts";
 
 /**
  * What the disposable CDP fixture seeds once the runtime has recovered. It is
@@ -12,6 +13,11 @@ export type CdpRuntimeFixture = Readonly<{
   verification: boolean;
   /** An active task the runtime does not know, so the fatal invariant can be exercised. */
   unknownActiveTask: boolean;
+  /**
+   * Start the Run intervention fixture source as a scheduled run, which the
+   * renderer cannot do, so a check can see that it never pauses (ADR 0082).
+   */
+  scheduledInterventionRun?: boolean;
 }>;
 
 export async function seedCdpRuntimeFixture(
@@ -53,6 +59,12 @@ export async function seedCdpRuntimeFixture(
       humanAssistanceContract: contract,
     });
     await runtime.rehydrate();
+  }
+  if (fixture.scheduledInterventionRun) {
+    const [result] = await runtime.start([RUN_INTERVENTION_FIXTURE_TASK_ID], {
+      scheduledAtUtc: new Date().toISOString(),
+    });
+    if (result?.status === "error") throw result.error;
   }
   if (fixture.unknownActiveTask) {
     runtime.upsertRuntimeTask({

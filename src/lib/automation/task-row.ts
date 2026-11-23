@@ -118,6 +118,19 @@ export function automationRowPercent(status: AutomationTaskStatus, percent: numb
   return percent === null ? null : Math.min(99, percent);
 }
 
+/**
+ * Whether the row's card offers a Run live view (ADR 0147): only a manual run
+ * the runtime reports running, or verifying, whose page the person can watch.
+ */
+export function runLiveViewAvailable(
+  row: Pick<AutomationTaskRow, "runId" | "runTrigger" | "isActive" | "status">,
+): boolean {
+  return Boolean(row.runId)
+    && row.runTrigger === "manual"
+    && row.isActive
+    && (row.status === "running" || row.status === "waiting_for_human");
+}
+
 /** Overlay one authoritative runtime record on a row without mutating it. */
 export function applyAutomationRuntime(
   row: AutomationTaskRow,
@@ -147,6 +160,8 @@ export function applyAutomationRuntime(
     workflowProgress: { ...runtime.progress, percent: progressPercent },
     appWorkflowOutcome: runtime.appWorkflowOutcome,
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
+    runTrigger: runtime.trigger ?? null,
+    runIntervention: runtime.intervention ?? null,
     progressPercent,
     ...automationTaskRowActions(status, isActive, row.credentialsReady),
   };

@@ -15,7 +15,9 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import type { CathayStrictSourceOptions } from "./cathay-statements.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 import {
   assembleCurrentDepositCapture,
@@ -468,15 +470,13 @@ export function parseCathayCurrentDepositBalanceSnapshot(
   return foreignRows(input.response, input.rawBody);
 }
 
-async function findExactControl(
-  scope: FrameScope,
-  text: string,
-  timeoutMs: number,
-): Promise<Locator> {
-  const { page } = scope;
+/** The Cathay menus and overview are expected page states (ADR 0147): a manual run pauses when one never appears. */
+type PageStateWait = Readonly<{ scope: FrameScope; intervention: WorkflowInterventionPort | undefined; timeoutMs: number }>;
+
+async function findExactControl(wait: PageStateWait, text: string): Promise<Locator> {
+  const { page } = wait.scope;
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  return await expectPageState(wait.scope, wait.intervention, async () => {
     for (const scope of [page, ...page.frames()]) {
       const controls = scope.locator("a, button, [role='button']").filter({ hasText: matcher });
       const count = await controls.count().catch(() => 0);
@@ -485,15 +485,13 @@ async function findExactControl(
         if (await control.isVisible().catch(() => false)) return control;
       }
     }
-    await scope.pause(250);
-  }
-  throw new Error(`Could not find Cathay control "${text}".`);
+    return null;
+  }, `Could not find Cathay control "${text}".`, { timeoutMs: wait.timeoutMs });
 }
 
-async function readDomesticUiAccountNumbers(scope: FrameScope, timeoutMs: number): Promise<readonly string[]> {
-  const { page } = scope;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function readDomesticUiAccountNumbers(wait: PageStateWait): Promise<readonly string[]> {
+  const { page } = wait.scope;
+  return await expectPageState(wait.scope, wait.intervention, async () => {
     for (const scope of [page, ...page.frames()]) {
       const buttons = scope.locator("table button");
       const count = await buttons.count().catch(() => 0);
@@ -504,9 +502,8 @@ async function readDomesticUiAccountNumbers(scope: FrameScope, timeoutMs: number
       }
       if (accounts.length > 0) return accounts;
     }
-    await scope.pause(250);
-  }
-  throw new Error("Could not read Cathay domestic UI account buttons.");
+    return null;
+  }, "Could not read Cathay domestic UI account buttons.", { timeoutMs: wait.timeoutMs });
 }
 
 function responseMatches(
@@ -546,13 +543,10 @@ export async function readCathayCurrentDepositBalanceResponse(
   };
   page.on("response", listener);
   try {
-    const section = await findExactControl(scope, kind === "domestic" ? "臺幣" : "外幣", timeoutMs);
+    const wait: PageStateWait = { scope, intervention: source.intervention, timeoutMs };
+    const section = await findExactControl(wait, kind === "domestic" ? "臺幣" : "外幣");
     await scope.withSignal((signal) => section.click({ signal }));
-    const overview = await findExactControl(
-      scope,
-      kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
-      timeoutMs,
-    );
+    const overview = await findExactControl(wait, kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽");
     const { response, evidence } = await source.reader.acquire(
       scope,
       cathayCurrentDepositResponseDeclaration(kind),
@@ -564,7 +558,7 @@ export async function readCathayCurrentDepositBalanceResponse(
     );
     const uiAccountNumbers =
       kind === "domestic"
-        ? await readDomesticUiAccountNumbers(scope, timeoutMs)
+        ? await readDomesticUiAccountNumbers(wait)
         : undefined;
     if (matching !== 1) {
       throw new Error("Cathay current balance source response was missing or ambiguous.");

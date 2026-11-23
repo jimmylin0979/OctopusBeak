@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
@@ -39,6 +39,7 @@ import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/cur
 import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
@@ -661,6 +662,10 @@ async function firstVisibleMatch(locator: Locator): Promise<Locator | null> {
  */
 export async function linebankAutoDismissApprovedAlert(
   scope: FrameScope,
+  /** The run's Run intervention points; Source sign-in passes none, as its own deadline is the point (ADR 0147). */
+  intervention?: WorkflowInterventionPort,
+  /** How long the dismissed alert may take to close; default the sign-in deadline. */
+  { timeoutMs = LINEBANK_LOGIN_TIMEOUT_MS }: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<boolean> {
   const dialogs = scope.page.getByRole("alertdialog");
   const visibleDialogs = await scope.race(visibleMatches(dialogs));
@@ -685,11 +690,14 @@ export async function linebankAutoDismissApprovedAlert(
     throw new Error("LINE Bank approved dismissal button is not visible.");
   }
   await scope.withSignal((signal) => button.click({ signal }));
-  await scope.withSignal((signal) => dialog.waitFor({
-    state: "hidden",
-    timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-    signal,
-  }));
+  // The alert closing is an expected page state (ADR 0147); the dismissing click above is not probed again.
+  await expectPageState(
+    scope,
+    intervention,
+    async () => !(await dialog.isVisible().catch(() => false)),
+    "Timed out waiting for the LINE Bank alert dialog to close.",
+    { timeoutMs },
+  );
   if ((await scope.race(visibleMatches(dialogs))).length !== 0) {
     throw new Error("LINE Bank alert dialog remained visible after dismissal.");
   }
@@ -709,14 +717,20 @@ export async function linebankIsSignedIn(scope: FrameScope): Promise<boolean> {
 }
 
 /** Enter the transaction stage only after authentication has completed. */
-export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<void> {
+export async function linebankEnsureTransactionPage(
+  scope: FrameScope,
+  /** The run's Run intervention points, which the page waits consult (ADR 0147). */
+  intervention?: WorkflowInterventionPort,
+): Promise<void> {
   const { page } = scope;
-  const accountDropdownVisible = () => scope.withSignal((signal) =>
-    page.locator("#account-dropdown").waitFor({
-      state: "visible",
-      timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-      signal,
-    }));
+  const pageState = (probe: () => Promise<boolean>, failure: string) =>
+    expectPageState(scope, intervention, probe, failure, { timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS });
+  const accountDropdownVisible = async () => {
+    await pageState(
+      () => page.locator("#account-dropdown").isVisible().catch(() => false),
+      "Timed out waiting for the LINE Bank account dropdown.",
+    );
+  };
   if (new URL(page.url()).pathname === "/transaction") {
     await accountDropdownVisible();
     return;
@@ -724,13 +738,12 @@ export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<
 
   const transactionLink = await scope.race(firstVisibleMatch(transactionLinkLocator(page)));
   if (transactionLink) {
-    await Promise.all([
-      scope.withSignal((signal) => page.waitForURL((url) => url.pathname === "/transaction", {
-        timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-        signal,
-      })),
-      scope.withSignal((signal) => transactionLink.click({ signal })),
-    ]);
+    await scope.withSignal((signal) => transactionLink.click({ signal }));
+    // The click happens once; only the page it leads to is waited for.
+    await pageState(
+      async () => new URL(page.url()).pathname === "/transaction",
+      "Timed out waiting for the LINE Bank transaction page.",
+    );
   } else {
     await scope.withSignal((signal) => page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded", signal }));
   }
@@ -982,7 +995,8 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
     signedIn: linebankIsSignedIn,
     fill: (scope) => linebankFillLoginForm(scope, credentials),
     submit: linebankSubmitLoginForm,
-    prompts: linebankAutoDismissApprovedAlert,
+    // Sign-in has its own deadline, so its prompt handling gets no intervention port.
+    prompts: (scope) => linebankAutoDismissApprovedAlert(scope),
     dialogs: "dismiss",
     session: { none: "needs live verification" },
     timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS,
@@ -1014,8 +1028,8 @@ async function runLineBankWorkflow(
   return context.browser.withPage(async (page) => {
     await signIn(context, page, LINEBANK_SOURCE, linebankSignInPlan(input.credentials));
     const scope = frameScope(page, context.signal);
-    await linebankAutoDismissApprovedAlert(scope);
-    await linebankEnsureTransactionPage(scope);
+    await linebankAutoDismissApprovedAlert(scope, context.intervention);
+    await linebankEnsureTransactionPage(scope, context.intervention);
 
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {

@@ -18,7 +18,7 @@ import {
 import { HNCB_CREDENTIAL_FIELDS, HNCB_PRODUCTS, HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   hncbCurrentBalanceSnapshot,
@@ -34,6 +34,7 @@ import type {
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { ifFound, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import {
   HNCB_NETBANK_ORIGIN,
   HNCB_TRX_DISPATCHER_PATH,
@@ -382,7 +383,7 @@ async function openFirstStatementDetail(site: HncbNetbankSite): Promise<Frame> {
   const mainFrame = await site.main();
   await site.frames.withSignal((signal) => mainFrame.locator(STATEMENT_DETAIL_LINK).first().click({ signal }));
   await site.settle();
-  return await waitForStatementForm(site);
+  return await waitForStatementForm(site, undefined, site.intervention);
 }
 
 function querySubmitLink(mainFrame: Frame): Locator {
@@ -395,10 +396,14 @@ function querySubmitLink(mainFrame: Frame): Locator {
 async function waitForStatementForm(
   site: HncbNetbankSite,
   timeoutMs = 60_000,
+  /** The run's Run intervention points; left out where the wait is optional and expected to time out (ADR 0147). */
+  intervention?: WorkflowInterventionPort,
 ): Promise<Frame> {
   const mainFrame = await site.main();
   const attached = async (locator: Locator) => (await locator.count().catch(() => 0)) > 0;
-  await site.frames.until(
+  await expectPageState(
+    site.frames,
+    intervention,
     async () => await attached(mainFrame.locator('select[name="acct1"], #acct1').first()) &&
       await attached(querySubmitLink(mainFrame)),
     "Could not find the HNCB account selector and statement query link.",
@@ -454,7 +459,7 @@ async function hasNoStatementData(mainFrame: Frame): Promise<boolean> {
 /** The result frame once it offers the export, or null when HNCB answers with no data. */
 async function waitForStatementResult(site: HncbNetbankSite): Promise<Frame | null> {
   const mainFrame = await site.main();
-  const result = await site.frames.until(async () => {
+  const result = await expectPageState(site.frames, site.intervention, async () => {
     if ((await statementDownloadLink(mainFrame).count().catch(() => 0)) > 0)
       return { frame: mainFrame };
     if (await hasNoStatementData(mainFrame)) return { frame: null };

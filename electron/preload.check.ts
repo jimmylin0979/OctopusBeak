@@ -55,10 +55,15 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "automation:block",
   "automation:cancel",
   "automation:cancelDeviceRegistration",
+  "automation:closeLiveView",
   "automation:deviceRegistrationStatus",
   "automation:fatalRuntimeSnapshot",
   "automation:forceTerminate",
+  "automation:giveUpRun",
+  "automation:handBackRun",
+  "automation:interventionInput",
   "automation:openExternalPrerequisite",
+  "automation:openLiveView",
   "automation:openPreviewStructureReportIssue",
   "automation:openSetupGuideLink",
   "automation:previewStructureReport",
@@ -71,6 +76,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "automation:startDeviceRegistration",
   "automation:submitDeviceRegistrationCode",
   "automation:takeNotificationTarget",
+  "automation:takeOverRun",
   "data:acknowledgeVersion",
   "data:getVersion",
   "display:setScale",
@@ -124,14 +130,32 @@ const data = api.data as Record<string, (listener: () => void) => () => void>;
 const appUpdates = api.appUpdates as Record<string, (listener: () => void) => () => void>;
 automation.onRuntimeChanged!(() => {});
 automation.onNotificationTargetRequested!(() => {});
+automation.onLiveViewFrame!(() => {});
+automation.onLiveViewEnded!(() => {});
 data.onInvalidated!(() => {});
 appUpdates.onChanged!(() => {});
 assert.deepEqual(recorded.listened, [
   "automation:runtime-changed",
   "automation:notification-target-requested",
+  "automation:live-view-frame",
+  "automation:live-view-ended",
   "data:invalidated",
   "appUpdates:changed",
 ]);
+// ADR 0147: the bridge can open, close and hear a Run live view, and take a
+// paused run over; exactly one method carries the person's input, and the
+// host refuses it unless the run is paused in an intervention. The Assist
+// viewer channels removed by ADR 0039 stay absent.
+assert.deepEqual(
+  Object.keys(api.automation!).filter((method) => /live ?view|run$|intervention/iu.test(method) && method !== "run").sort(),
+  ["closeLiveView", "giveUpRun", "handBackRun", "interventionInput", "onLiveViewEnded", "onLiveViewFrame", "openLiveView", "takeOverRun"],
+);
+assert.deepEqual(
+  Object.keys(api.automation!).filter((method) => /input|pointer|key|viewer/iu.test(method)),
+  ["interventionInput"],
+  "one bridge method sends input to a run's page",
+);
+assert.equal(invokedBy.get("automation.interventionInput"), "automation:interventionInput");
 
 const dataViews = api.dataViews as { enabled(): Promise<unknown>; subscribe(...args: unknown[]): Promise<unknown> };
 recorded.invoked.length = 0;

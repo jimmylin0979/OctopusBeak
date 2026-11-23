@@ -8,7 +8,7 @@ import { POST_CREDENTIAL_FIELDS, POST_PRODUCTS, POST_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ElementHandle, Locator, Page } from "playwright";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
@@ -23,6 +23,7 @@ import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
@@ -383,14 +384,25 @@ export function postCaptchaGenerationUnchanged(
   return beforeUrl === afterUrl && sameElement;
 }
 
-async function openDetailPage(scope: FrameScope, index: number): Promise<void> {
+/** The account list and statement page are expected page states (ADR 0147): a manual run pauses when one never appears. */
+type PostPageStateWait = Readonly<{ scope: FrameScope; intervention: WorkflowInterventionPort | undefined }>;
+
+async function expectVisible(wait: PostPageStateWait, locator: Locator, description: string): Promise<void> {
+  await expectPageState(
+    wait.scope,
+    wait.intervention,
+    () => locator.isVisible().catch(() => false),
+    `Timed out waiting for ${description}.`,
+  );
+}
+
+async function openDetailPage(wait: PostPageStateWait, index: number): Promise<void> {
+  const { scope } = wait;
   const { page } = scope;
   await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
-  await scope.withSignal((signal) =>
-    visibleDetailLinks(page).first().waitFor({ state: "visible", timeout: 60_000, signal }));
+  await expectVisible(wait, visibleDetailLinks(page).first(), "the Post account list");
   await scope.withSignal((signal) => visibleDetailLinks(page).nth(index).click({ signal }));
-  await scope.withSignal((signal) =>
-    sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000, signal }));
+  await expectVisible(wait, sixMonthDateLabel(page), "the Post statement's six-month range");
 }
 
 function requireCompletePostStatementRows(
@@ -512,20 +524,20 @@ export async function readPostDepositSource(
 ): Promise<PostDepositSourceSnapshot> {
   const observedAt = taipeiInstant(context.now());
   const statements = await collectPostStatementSources(
-    frameScope(page, context.signal),
+    { scope: frameScope(page, context.signal), intervention: context.intervention },
     product,
   );
   return { observedAt, statements };
 }
 
 async function collectPostStatementSources(
-  scope: FrameScope,
+  wait: PostPageStateWait,
   { event, reader, validate }: Pick<ProductCollectionHandle, "event" | "reader" | "validate">,
 ): Promise<PostQueriedStatement[]> {
+  const { scope } = wait;
   const { page, signal } = scope;
   await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
-  await scope.withSignal((signal) =>
-    visibleDetailLinks(page).first().waitFor({ state: "visible", timeout: 60_000, signal }));
+  await expectVisible(wait, visibleDetailLinks(page).first(), "the Post account list");
   const accountCount = await scope.race(visibleDetailLinks(page).count());
   if (accountCount === 0)
     throw new Error("No Post accounts are visible in the authenticated session.");
@@ -536,7 +548,7 @@ async function collectPostStatementSources(
 
   const statements: PostQueriedStatement[] = [];
   for (let index = 0; index < accountCount; index += 1) {
-    await openDetailPage(scope, index);
+    await openDetailPage(wait, index);
     await event("decoding", "started", "source-decoding-started", {
       completed: index,
       total: accountCount,
@@ -666,6 +678,7 @@ async function runPostDeposit(
     () => readPostCurrentDepositBalanceResponse(page, {
       signal: context.signal,
       reader: product.reader,
+      ...(context.intervention ? { intervention: context.intervention } : {}),
     }),
   );
 }

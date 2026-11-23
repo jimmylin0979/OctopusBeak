@@ -4,7 +4,7 @@ import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "
 import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import type { WorkflowProgressStatementType } from "../workflow-executor.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
+import type { RunStop, WorkflowRunEvent } from "../run-event.ts";
 import {
   projectWorkflowRunProgress,
   selectedWorkflowStatementTypes,
@@ -100,6 +100,7 @@ async function recordWorkflowFailure(
     errorCode: string;
     stage?: WorkflowRunEvent["stage"];
     statementType?: WorkflowProgressStatementType;
+    stoppedAt?: RunStop;
     error?: unknown;
     safeError?: unknown;
   }>,
@@ -213,6 +214,10 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
+          // A safe point pauses only a manual run with a Take over waiting; an
+          // expired deadline pauses a manual run on its own (ADR 0147).
+          intervention: async (request, signal) =>
+            ({ resolution: (await context.run.interventionSafePoint(signal, request.at)) ?? "none" }),
           ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
         startWorker,
@@ -249,6 +254,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
       ...diagnostic,
       errorCode,
       stage: lastOperation(events)?.stage,
+      stoppedAt: result.failure?.stoppedAt,
     });
     recordPreviewFailure(errorCode, events, shapes);
   }

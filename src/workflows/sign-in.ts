@@ -61,6 +61,15 @@ export type FormPlan = Readonly<{
   timeoutMs?: number;
   /** The restarted deadline after a confirmed takeover; defaults to `timeoutMs`. */
   takeoverTimeoutMs?: number;
+  /**
+   * Whether a manual run pauses in a Run intervention when the deadline
+   * expires (ADR 0147). Default true. False for a source whose plan reads the
+   * deadline itself as a verdict, such as a verification wall only the solver
+   * may pass (ADR 0039). "after-takeover" opts out only for the first
+   * deadline: once a session takeover restarted it, the restarted deadline
+   * pauses like any other.
+   */
+  deadlineIntervention?: boolean | "after-takeover";
 }>;
 
 /** A source whose sign-in flow stays its own; the step owns only the bracket, the dialogs and cancellation. */
@@ -118,6 +127,8 @@ const CLOSE_TIMEOUT_MS = 500;
 const PRE_SUBMIT_PROMPT_MS = 1_500;
 const PROMPT_HIDDEN_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
+/** A sign-in wait consults its Run intervention safe point at most this often (ADR 0147). */
+const SAFE_POINT_MS = 1_000;
 
 /**
  * Sign a browser-driven Verified source in. The step owns the dialog listener
@@ -173,6 +184,7 @@ class Attempt {
   private verdict: Error | undefined;
   private takeovers = 0;
   private restartDeadline: (() => void) | undefined;
+  private consultedAt = Number.NEGATIVE_INFINITY;
   private listening = false;
   /** Dialogs are handled in arrival order, so the first one decides the outcome. */
   private dialogs: Promise<void> = Promise.resolve();
@@ -283,16 +295,55 @@ class Attempt {
         }
         // A marker already held runs its settle window to the end.
         if (heldSince === undefined && Date.now() >= deadline) {
+          // A manual run pauses for the person instead (ADR 0147); after Hand back the page is checked again from the top.
+          if (await this.deadlineExpired(plan)) {
+            deadline = Date.now() + timeoutMs;
+            continue;
+          }
           throw new SignInDeadlineError(timeoutMs, this.takeovers > 0);
         }
         if (plan.prompts && await this.raced(plan.prompts(this.scope))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();
+        // The person changed the page during a Run intervention: check it again from the top with a fresh deadline.
+        if (await this.safePoint()) {
+          deadline = Date.now() + timeoutMs;
+          heldSince = undefined;
+          continue;
+        }
         await this.scope.pause(TICK_MS);
       }
     } finally {
       this.restartDeadline = undefined;
     }
+  }
+
+  /**
+   * A Run intervention safe point (ADR 0147), consulted at most once a
+   * second. True when the run paused here and the person handed it back.
+   * Native dialogs keep their policy meanwhile: the listener stays attached.
+   */
+  private async safePoint(): Promise<boolean> {
+    const intervention = this.context.intervention;
+    if (!intervention || Date.now() - this.consultedAt < SAFE_POINT_MS) return false;
+    this.consultedAt = Date.now();
+    return (await this.raced(intervention.safePoint())) === "handed-back";
+  }
+
+  /**
+   * The deadline expired: ask the host to pause the run in a Run intervention,
+   * never throttled like a safe point. True after the person handed it back;
+   * false when the host refused (a scheduled run, the pause cap) or the plan
+   * reads its deadline as a verdict. Dialogs keep their policy while paused.
+   */
+  private async deadlineExpired(plan: FormPlan): Promise<boolean> {
+    const intervention = this.context.intervention;
+    if (!intervention || plan.deadlineIntervention === false) return false;
+    if (plan.deadlineIntervention === "after-takeover" && this.takeovers === 0) return false;
+    const handedBack = (await this.raced(intervention.deadlineExpired())) === "handed-back";
+    // The pause stands in for a safe-point consult: the next one is a second away.
+    this.consultedAt = Date.now();
+    return handedBack;
   }
 
   /**

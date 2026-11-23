@@ -71,6 +71,16 @@ test("each automation service channel calls its bridge method's namesake with th
   const handlers = automationForwardHandlers(service);
 
   assert.equal(Object.hasOwn(handlers, "automation:selectCertificateFile"), false);
+  assert.equal(Object.hasOwn(handlers, "automation:openLiveView"), false, "a live view's frames go to the window that opened it");
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:closeLiveView"], "closeLiveView");
+  // ADR 0147: a Run intervention's channels, each through the trusted sender check.
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:takeOverRun"], "takeOverRun");
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:handBackRun"], "handBackRun");
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:giveUpRun"], "giveUpRun");
+  assert.equal(AUTOMATION_SERVICE_CHANNELS["automation:interventionInput"], "interventionInput");
+  for (const removed of ["viewerInput", "viewerScreenshot", "viewerInspect", "viewerCompletionCheck", "resumeHumanAssistance"]) {
+    assert.equal(Object.hasOwn(AUTOMATION_SERVICE_CHANNELS, `automation:${removed}`), false, `ADR 0039 removed automation:${removed}`);
+  }
   await assertForwards(handlers, AUTOMATION_SERVICE_CHANNELS, calls);
 });
 

@@ -48,6 +48,11 @@ assert.match(
   /hasOccurrenceBeenAttempted:\s*\(occurrenceUtc\)\s*=>\s*operationalRuntime\.provider\.automation\.hasOccurrenceBeenAttempted\(\s*"exchange-rates",\s*occurrenceUtc,?\s*\)/,
 );
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
+assert.match(
+  source,
+  /if \(cdpInterventionFixture\) \{\s*if \(app\.isPackaged \|\| !cdpFixture\) throw new Error\([^)]*\);\s*assertDisposableVerificationFixtureRoot\(userData\);/u,
+  "the Run intervention fixture source runs only in the unpackaged, disposable CDP fixture launch",
+);
 assert.match(source, /const packagedBrowserFixture = packagedBrowserFixtureEnabled\(process\.env\)/);
 assert.match(source, /runPackagedBrowserWorkerFixture\(\s*runtime,\s*userData,\s*process\.env,\s*\)/);
 assert.match(source, /PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX/);

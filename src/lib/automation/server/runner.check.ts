@@ -358,3 +358,32 @@ test("a run whose record cannot be finalized still settles, and a second claim o
   release.resolve();
   assert.equal(await first.settled, null);
 });
+
+test("the runs one runner opens share one Run intervention line, so only one is paused for you", async () => {
+  const root = await mkdtemp(join(tmpdir(), "automation-runner-intervention-"));
+  writeAutomationSettingsFile(join(root, "settings.json"), { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit" });
+  const reached = new Map<string, ActiveAutomationTaskRun>();
+  const bothReached = deferred();
+  const runExecution: TaskRunExecution = async (plan, run) => {
+    await run.transition("running");
+    const resolution = run.interventionSafePoint(run.signal, "deadline");
+    reached.set(plan.task.id, run);
+    if (reached.size === 2) bothReached.resolve();
+    await resolution.catch(() => undefined);
+    return { summary: null, failure: { code: "cancelled", proven: true } };
+  };
+  const runner = freshRunner(providerStub(), { directory: root, runExecution });
+  try {
+    const first = await opened(runner.claim("exchange-rates"));
+    const second = await opened(runner.claim("linebank-statements"));
+    await bothReached.promise;
+    const states = [...reached.values()].map((run) => run.intervention()).sort();
+    assert.deepEqual(states, ["paused", "waiting"]);
+    await runner.cancel("exchange-rates", first.runId);
+    await runner.cancel("linebank-statements", second.runId);
+    await first.finished;
+    await second.finished;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

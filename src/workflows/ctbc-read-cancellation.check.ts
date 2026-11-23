@@ -8,6 +8,7 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { readCtbcCurrentDepositBalanceResponse } from "./ctbc-current-deposit-balances.ts";
 import { readCtbcDepositSource } from "./ctbc-statements.ts";
+import { FrameScopeTimeoutError } from "./frame-scope.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
@@ -110,4 +111,99 @@ test("cancelling the run stops a current-balance read clicking its menu", () =>
       text: strictSourceText,
     });
     await assertStopped(page, readCtbcCurrentDepositBalanceResponse(page, cancelledAfter(ABORT_AFTER_MS), reader));
+  }));
+
+const productFor = (signal: AbortSignal) => {
+  const now = () => new Date().toISOString();
+  return productCollectionHandle({
+    now,
+    text: strictSourceText,
+    signal,
+    event: async () => undefined,
+    stage: () => assert.fail("a stopped read stages nothing"),
+    reportActivity: async () => undefined,
+    collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+  });
+};
+
+test("CTBC's month tabs are a Run intervention safe point (ADR 0147)", () =>
+  withCtbc(`<div data-control></div>`, async (page) => {
+    const controller = new AbortController();
+    const consulted: string[] = [];
+    const intervention = {
+      // The person brings up the month tabs, as during a Take over.
+      safePoint: async () => {
+        if (consulted.length === 0) {
+          await page.evaluate(() => {
+            for (const month of ["2026/11", "2026/10"]) {
+              const tab = document.createElement("a");
+              tab.className = "nav-link";
+              tab.textContent = month;
+              tab.onclick = () => { document.body.dataset.tab = month; };
+              document.body.append(tab);
+            }
+          });
+        }
+        consulted.push("safe-point");
+        return "none" as const;
+      },
+      deadlineExpired: async () => assert.fail("the tabs appeared before the deadline"),
+    };
+    const context = { signal: controller.signal, text: strictSourceText, now: () => new Date().toISOString(), event: async () => undefined, intervention } as unknown as WorkflowContext;
+    const read = readCtbcDepositSource(page, {
+      credentials: { ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password" },
+      statementTypes: ["deposit"],
+      attachedPreviewProducts: [],
+    }, context, productFor(controller.signal));
+    read.catch(() => undefined);
+    // The second month's tab is clicked once the wait has found the tabs; its reply never comes.
+    await page.waitForFunction(() => document.body.dataset.tab === "2026/10", undefined, { timeout: 10_000 });
+    controller.abort(CANCELLED);
+    await assert.rejects(read, (error: unknown) => error === CANCELLED);
+    assert.ok(consulted.length > 0, "the tabs' wait is a safe point");
+  }));
+
+test("CTBC's balance menu pauses a manual run at its deadline; a scheduled run fails with a step-wait timeout (ADR 0147)", () =>
+  withCtbc(`<div data-control></div>`, async (page) => {
+    await page.goto(`https://${CONTRACT.endpointHost}/twrbc/`);
+    const reader = sourceReader({ now: () => new Date().toISOString(), text: strictSourceText });
+    const controller = new AbortController();
+    let deadlines = 0;
+    const handedBack = readCtbcCurrentDepositBalanceResponse(page, controller.signal, reader, {
+      timeoutMs: 300,
+      intervention: {
+        safePoint: async () => "none",
+        deadlineExpired: async () => {
+          deadlines += 1;
+          await page.evaluate(() => {
+            const menu = document.createElement("a");
+            menu.textContent = "臺幣/轉帳";
+            menu.onclick = () => {
+              const summary = document.createElement("a");
+              summary.textContent = "臺幣存款概要";
+              summary.onclick = () => { document.body.dataset.summary = "yes"; };
+              document.body.append(summary);
+            };
+            document.body.append(menu);
+          });
+          return "handed-back";
+        },
+      },
+    });
+    handedBack.catch(() => undefined);
+    await page.waitForFunction(() => document.body.dataset.summary === "yes", undefined, { timeout: 10_000 });
+    controller.abort(CANCELLED);
+    await assert.rejects(handedBack, (error: unknown) => error === CANCELLED);
+    assert.equal(deadlines, 1, "after Hand back the menu is walked to the summary");
+
+    await page.reload();
+    for (const intervention of [{ safePoint: async () => "none" as const, deadlineExpired: async () => "none" as const }, undefined]) {
+      await assert.rejects(
+        readCtbcCurrentDepositBalanceResponse(page, new AbortController().signal, reader, {
+          timeoutMs: 300,
+          ...(intervention ? { intervention } : {}),
+        }),
+        (error: unknown) => error instanceof FrameScopeTimeoutError && /臺幣\/轉帳/u.test(error.message),
+      );
+    }
   }));

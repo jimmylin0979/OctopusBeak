@@ -323,10 +323,21 @@ export async function runAppWorkflowWorker(
         return status;
       },
     };
+    // Only a browser workflow has a page a person could take over.
+    const intervention: WorkflowExecutorPorts["intervention"] = browser
+      ? {
+        async consult(signal, at) {
+          signal.throwIfAborted();
+          const { resolution } = await hostCalls.call("intervention", { at });
+          return resolution;
+        },
+      }
+      : undefined;
     const ports: WorkflowExecutorPorts = {
       browser: browser ?? nonbrowserPage,
       text: strictSourceText,
       humanAssistance,
+      ...(intervention ? { intervention } : {}),
       ...opened.ports,
       commitAttempts,
       events: eventsPort,

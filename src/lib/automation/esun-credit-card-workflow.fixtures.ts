@@ -85,6 +85,8 @@ export function createPage(options: {
   timelineStatus?: number;
   /** The host the card popups open on, and so the host their history replies are declared on. */
   popupHost?: string;
+  /** The path a card popup shows; without it, the page the link that opened it leads to. */
+  popupPath?: () => string | undefined;
   portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply | EsunPortalPageReply;
   /** Serves getCardSummary as HTTP 200 with this reply; without it the summary answers 204. */
   cardSummary?: EsunCardSummaryReply;
@@ -127,8 +129,10 @@ export function createPage(options: {
     evaluate: async () => undefined,
     boundingBox: async () => ({ x: 1, y: 1, width: 640, height: 480 }),
   });
+  let openedBy = "刷卡明細";
   const popup = {
-    url: () => `https://${options.popupHost ?? "ebank.esunbank.com.tw"}/IESC/cardTrans`,
+    url: () => `https://${options.popupHost ?? "ebank.esunbank.com.tw"}${
+      options.popupPath?.() ?? (openedBy === "帳單明細" ? "/IESC/cardBill" : "/IESC/cardTrans")}`,
     waitForURL: async () => undefined,
     waitForResponse: async (predicate: (response: Response) => boolean) => {
       const index = responses.findIndex((response) => predicate(response));
@@ -143,10 +147,10 @@ export function createPage(options: {
   };
   const page = {
     url: () => "https://ebank.esunbank.com.tw/index.jsp",
-    getByText: () => ({
+    getByText: (label: string) => ({
       isVisible: async () => true,
       waitFor: async () => undefined,
-      click: async () => undefined,
+      click: async () => { openedBy = label; },
     }),
     waitForEvent: async () => popup,
     waitForResponse: async (predicate: (response: Response) => boolean) => {

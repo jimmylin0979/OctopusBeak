@@ -7,6 +7,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import {
   appendWorkflowFailureDiagnostic,
+  buildWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
   sanitizeSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
@@ -263,6 +264,25 @@ test("a rejected commit item records its admission rule and nothing outside that
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("the failure diagnostic names the step and page kind the run stopped on, and nothing more of the page", () => {
+  const input = {
+    workflowId: "ctbc-statements",
+    taskRunId: "test-run-stop",
+    source: "workflow-worker",
+    errorCode: "authentication-timeout",
+    stage: "authentication",
+  } as const;
+  const stoppedAt = { step: "login-submitted", page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" } };
+  assert.deepEqual(buildWorkflowFailureDiagnostic({ ...input, stoppedAt }, { repoRoot: repository })?.stoppedAt, stoppedAt);
+  const leaking = buildWorkflowFailureDiagnostic({
+    ...input,
+    stoppedAt: { step: "login-submitted", page: { kind: "url", host: "bank.example", path: "/login?token=SECRET" }, text: "BALANCE 12,345" },
+  }, { repoRoot: repository });
+  assert.ok(leaking);
+  assert.equal(leaking.stoppedAt, undefined);
+  assert.doesNotMatch(JSON.stringify(leaking), /SECRET|BALANCE/u);
 });
 
 test("invalid sink locations are ignored and report failure without throwing", async () => {

@@ -373,6 +373,41 @@ assert.doesNotMatch(saveCredentialsSource, /credentialInputValue/);
 
 assert.doesNotMatch(source, /viewerImageUrl|screenshotUnavailable|floatingInput/);
 
+// ADR 0147: a running manual run's card offers View, and one Run live view is open at a time.
+const taskActionsSource = sourceBetween('<div class="task-actions">', "</td>");
+assert.match(
+  taskActionsSource,
+  /\{#if runLiveViewAvailable\(task\)\}\s*<button[^>]*class="button secondary task-control live-view-action"[\s\S]*?onclick=\{\(\) => openLiveView\(task\)\}[\s\S]*?\{\$t\.automation\.liveView\.view\}/u,
+  "View appears only when the row's run is a running manual run",
+);
+assert.match(source, /let liveView: \{ taskId: string; runId: string \} \| null = null;/u, "one view at a time");
+assert.equal(source.match(/<RunLiveViewDialog\b/gu)?.length, 1, "the page mounts one live view dialog");
+assert.match(
+  source,
+  /\{#if liveView && liveViewTask\}\s*\{#key liveView\.runId\}\s*<RunLiveViewDialog\s+port=\{window\.octopusBeak\.automation\}\s+taskId=\{liveView\.taskId\}\s+runId=\{liveView\.runId\}/u,
+);
+assert.match(
+  source,
+  /\$: liveViewTask = liveView[\s\S]*?task\.runId === liveView\?\.runId && runLiveViewAvailable\(task\)/u,
+  "the dialog closes once its run stops running or another run replaces it",
+);
+assert.match(source, /step=\{present\(liveViewTask\)\.progressLabel\}/u, "the dialog names the run's current step as its card does");
+// The dialog's Take over, waiting and controlling states follow the runtime's report of the run.
+assert.match(source, /intervention=\{liveViewTask\.runIntervention \?\? null\}/u);
+assert.match(source, /verifying=\{liveViewTask\.status === "waiting_for_human"\}/u, "Take over is unavailable while verifying");
+// A paused run says it needs the person even with no live view open (ADR 0147).
+assert.match(source, /\$: pausedTasks = live\.tasks\.filter\(runNeedsYou\);/u, "the notice follows the runtime's report of paused runs");
+assert.match(
+  source,
+  /\{#if pausedTasks\.length\}\s*<section class="card run-intervention-notices" role="alert"[\s\S]*?\{\$t\.automation\.liveView\.pausedNoticeTitle\}[\s\S]*?\{#each pausedTasks as task \(task\.id\)\}[\s\S]*?\{\$t\.automation\.liveView\.pausedNotice\(taskLabel\(task, \$locale\)\)\}[\s\S]*?onclick=\{\(\) => openLiveView\(task\)\}/u,
+  "an in-App notice names each paused source and opens its live view",
+);
+assert.match(
+  source,
+  /\{#if present\(task\)\.showProgressStatus\}\s*<span class=\{`chip \$\{present\(task\)\.needsYou \|\| present\(task\)\.waitingForYou \? "warn" : statusClass\(task\.status\)\}`\}>\{present\(task\)\.statusLabel\}<\/span>/u,
+  "the card's chip reads Needs you while its run is paused, and Waiting for you while it waits behind another",
+);
+
 assert.match(
   source,
   /watchRunDetailsOverview\(expandedRunDetailsTaskId === null \? null : overviewLive\)/,

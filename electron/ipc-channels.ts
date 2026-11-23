@@ -74,7 +74,9 @@ type ChannelMethod<Channel extends InvokeChannel> = {
  * Channels whose handler only forwards to the automation desktop service
  * method of the bridge method's name (ADR 0073). The value must be that
  * bridge method's name. `automation:selectCertificateFile` is absent: its
- * handler turns the event into the dialog's owner window first.
+ * handler turns the event into the dialog's owner window first. So is
+ * `automation:openLiveView`: its handler turns the event's sender into the
+ * only window the view's frames reach (ADR 0147).
  */
 export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:block": "loadBlock",
@@ -95,6 +97,11 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:takeNotificationTarget": "takeNotificationTarget",
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
+  "automation:closeLiveView": "closeLiveView",
+  "automation:takeOverRun": "takeOverRun",
+  "automation:handBackRun": "handBackRun",
+  "automation:giveUpRun": "giveUpRun",
+  "automation:interventionInput": "interventionInput",
   "settings:clearSignInData": "clearSignInData",
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };

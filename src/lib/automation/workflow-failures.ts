@@ -20,10 +20,14 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
   "canonical-reset-required",
   "commit-outcome-unknown",
   "collection-scope-changed",
+  "run-intervention-timed-out",
   "workflow-failed",
 ] as const;
 
 export type TypedWorkflowErrorCode = typeof TYPED_WORKFLOW_ERROR_CODES[number];
+
+/** A paused Run intervention ended after 5 minutes without the person (ADR 0147). */
+export const INTERVENTION_TIMED_OUT = "run-intervention-timed-out" satisfies TypedWorkflowErrorCode;
 
 /** A failure whose Failure code is already known where it is thrown. */
 export class FailureCodeError extends Error {
@@ -41,7 +45,8 @@ export type UserAction =
   | "check-sign-in-details"
   | "check-verification-settings"
   | "update-app"
-  | "delete-financial-data";
+  | "delete-financial-data"
+  | "attend-paused-run";
 
 export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "captcha-provider-rejected": null,
@@ -64,6 +69,7 @@ export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "canonical-reset-required": "delete-financial-data",
   "commit-outcome-unknown": null,
   "collection-scope-changed": null,
+  "run-intervention-timed-out": "attend-paused-run",
   "workflow-failed": null,
 } as const satisfies Record<TypedWorkflowErrorCode, UserAction | null>;
 
@@ -92,6 +98,7 @@ export const WORKFLOW_FAILURE_ENDS_RUN = {
   "canonical-reset-required": true,
   "commit-outcome-unknown": true,
   "collection-scope-changed": true,
+  "run-intervention-timed-out": true,
   "workflow-failed": true,
 } as const satisfies Record<TypedWorkflowErrorCode, boolean>;
 
@@ -120,6 +127,10 @@ const userActionMessages: Record<UserAction, Readonly<{ zh: string; en: string }
   "delete-financial-data": {
     zh: "資料格式已更新，這個來源要等刪除所有收集的財務資料後才能再同步。請到設定執行「刪除所有收集的財務資料」。",
     en: "The data format was updated, so this source cannot sync until all collected financial data is deleted. Go to Settings and choose Delete all collected financial data.",
+  },
+  "attend-paused-run": {
+    zh: "同步暫停等你處理頁面，但 5 分鐘內沒有人接手，所以已停止。請在可以看著時重新執行同步。",
+    en: "The sync paused for you to fix its page, but no one took over within 5 minutes, so it stopped. Run it again when you can watch it.",
   },
 };
 
@@ -191,6 +202,10 @@ const explanations = {
   "collection-scope-changed": {
     zh: "同步進行中，這個來源的勾選項目、啟用狀態或登入身分已變更，之後的資料沒有寫入。變更前已完成的部分仍保留。請重新執行同步。",
     en: "This source's selected statements, enabled state, or sign-in identity changed during the sync, so later data was not saved. Parts saved before the change are kept. Run the sync again.",
+  },
+  "run-intervention-timed-out": {
+    zh: "同步暫停等你接手頁面，5 分鐘內沒有人處理，已釋放瀏覽器並停止。",
+    en: "The run paused for you to fix its page and no one did within 5 minutes, so it released the browser and stopped.",
   },
   "workflow-failed": {
     zh: "執行失敗，現有紀錄不足以判定詳細原因。",

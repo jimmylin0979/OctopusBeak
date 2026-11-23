@@ -50,6 +50,21 @@ test("Run history shows loading, its rows and counts, or a load failure inside t
     assert.ok(text.includes(explanation), "a failed run explains its code");
     assert.match(text, /01:05/);
 
+    const stopped = (stoppedAt: unknown) => ({ ...run("esun", "failed", "authentication-timeout"), appWorkflowOutcome: { errorCode: "authentication-timeout", stoppedAt } });
+    const timedOut = visibleText(await dialog({
+      status: "ready",
+      rows: [stopped({ step: "login-submitted", page: { kind: "step-wait-timeout", host: "bank.example", path: "/login" } })],
+    }));
+    assert.match(timedOut, /Stopped at login-submitted · step wait timed out · bank\.example\/login/);
+    const onPage = visibleText(await dialog({
+      status: "ready",
+      rows: [stopped({ step: "statement-query-started", page: { kind: "url", host: "bank.example", path: "/notice" } })],
+    }));
+    assert.match(onPage, /Stopped at statement-query-started · page bank\.example\/notice/);
+    assert.doesNotMatch(onPage, /step wait timed out/);
+    assert.match(visibleText(await dialog({ status: "ready", rows: [stopped({ step: "run-started" })] })), /Stopped at run-started(?! ·)/);
+    assert.doesNotMatch(text, /Stopped at/, "a run without a stop names none");
+
     const failed = await dialog({ status: "failed" });
     assert.match(visibleText(failed.match(/<span[^>]*role="alert"[^>]*>[\s\S]*?<\/span>/)?.[0] ?? ""), /^Run history could not be loaded/);
     assert.doesNotMatch(visibleText(failed), /Loading/);

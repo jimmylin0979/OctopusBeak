@@ -10,7 +10,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { failFastInterventionTimers, inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
@@ -78,7 +78,10 @@ function createPage(options: {
     filter() { return this; },
     isVisible: async () => {
       if (selector === "#btnHeaderLogout" && !signedIn) await options.onPoll?.();
+      // The signed-in statement page shows the account selector's options and the month tabs.
       return selector === "form input[type=text]"
+        || selector === "a.dropdown-item"
+        || selector === "a.nav-link"
         || (selector === "#btnHeaderLogout" && probeSignedIn());
     },
     waitFor: async () => undefined,
@@ -102,11 +105,12 @@ function createPage(options: {
         if (index < 0) throw new Error("No synthetic CTBC App response matched.");
         return responses.splice(index, 1)[0]!;
       },
-      getByText: () => {
+      getByText: (text: unknown) => {
         const textLocator = {
           first() { return textLocator; },
           click: async () => undefined,
-          isVisible: async () => false,
+          // The balance menu's two controls show once signed in; the notices and the busy message do not.
+          isVisible: async () => text === "臺幣/轉帳" || text === "臺幣存款概要",
         };
         return textLocator;
       },
@@ -197,6 +201,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     const taskRunId = result.taskRunId;
 
@@ -238,6 +243,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       executionHost: inProcessCheckHost({ browser: () => incompleteBrowser, capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     const incompleteRunId = incomplete.taskRunId;
     assert.equal(incomplete.status, "failed");
@@ -257,6 +263,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       executionHost: inProcessCheckHost({ browser: () => malformedBrowser, capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     const malformedRunId = malformed.taskRunId;
     assert.equal(malformed.status, "failed");
@@ -282,6 +289,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     });
     const cancelled = await runForCheck(cancellationRuntime, task.id);
     const cancellationRunId = cancelled.taskRunId;
@@ -317,6 +325,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     const ambiguousRunId = ambiguous.taskRunId;
     assert.equal(ambiguous.status, "failed");

@@ -100,6 +100,33 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       },
     },
     structureReports: { get: () => null },
+    liveView: {
+      open: async (taskId, runId, sink) => {
+        calls.push(["liveView.open", taskId, runId, typeof sink.frame]);
+        return { viewId: "view-1" };
+      },
+      close: async (viewId) => {
+        calls.push(["liveView.close", viewId]);
+      },
+      closeAll: async () => {
+        calls.push(["liveView.closeAll"]);
+      },
+      takeOver: async (viewId) => {
+        calls.push(["liveView.takeOver", viewId]);
+        return { ok: true as const };
+      },
+      handBack: async (viewId) => {
+        calls.push(["liveView.handBack", viewId]);
+        return true;
+      },
+      giveUp: async (viewId) => {
+        calls.push(["liveView.giveUp", viewId]);
+        return true;
+      },
+      input: async (viewId, input) => {
+        calls.push(["liveView.input", viewId, input]);
+      },
+    },
     notificationTarget: { take: () => null },
     eraseSignInDetails: () => {
       calls.push(["erase"]);
@@ -203,6 +230,47 @@ test("cancel and force terminate name the run the renderer saw", async () => {
   assert.deepEqual(calls, [
     ["cancel", "fubon-statements", "run-1"],
     ["forceTerminate", "fubon-statements", "run-2"],
+  ]);
+});
+
+test("a live view opens on the asking window's sink for the run the renderer saw, and the service's close ends it", async () => {
+  const { service, calls } = harness();
+  const sink = { frame: () => {}, ended: () => {} };
+  assert.throws(() => service.openLiveView(sink, 42, "run-1"), /task is invalid/u);
+  assert.throws(() => service.openLiveView(sink, "fubon-statements", ""), /run is invalid/u);
+  assert.throws(() => service.closeLiveView({ viewId: "view-1" }), /id is invalid/u);
+  assert.deepEqual(calls, []);
+
+  assert.deepEqual(await service.openLiveView(sink, "fubon-statements", "run-1"), { viewId: "view-1" });
+  await service.closeLiveView("view-1");
+  service.close();
+  assert.deepEqual(calls, [
+    ["liveView.open", "fubon-statements", "run-1", "function"],
+    ["liveView.close", "view-1"],
+    ["liveView.closeAll"],
+  ]);
+});
+
+test("Take over, Hand back, Give up and intervention input go to the open view, and a malformed view id reaches nothing", async () => {
+  const { service, calls } = harness();
+  for (const call of [
+    () => service.takeOverRun(42),
+    () => service.handBackRun(""),
+    () => service.giveUpRun({ viewId: "view-1" }),
+    () => service.interventionInput("x".repeat(129), { type: "click", x: 1, y: 1 }),
+  ]) assert.throws(call, /id is invalid/u);
+  assert.deepEqual(calls, []);
+
+  assert.deepEqual(await service.takeOverRun("view-1"), { ok: true });
+  assert.equal(await service.handBackRun("view-1"), true);
+  assert.equal(await service.giveUpRun("view-1"), true);
+  // The view normalizes the input itself; the service passes it on untouched.
+  await service.interventionInput("view-1", { type: "press", key: "Escape" });
+  assert.deepEqual(calls, [
+    ["liveView.takeOver", "view-1"],
+    ["liveView.handBack", "view-1"],
+    ["liveView.giveUp", "view-1"],
+    ["liveView.input", "view-1", { type: "press", key: "Escape" }],
   ]);
 });
 

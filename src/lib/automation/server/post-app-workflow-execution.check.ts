@@ -12,6 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonical/current-deposit-route-contracts.ts";
 import { taskById } from "./tasks.ts";
 import {
+  failFastInterventionTimers,
   inProcessCheckHost,
   runForCheck,
   runtimeForCheck,
@@ -162,7 +163,12 @@ function fakePostPage(options: {
       nth() { return locator; },
       filter() { return locator; },
       waitFor: async () => undefined,
-      isVisible: async () => selector.includes("btn_td_orange_dtl") ? signedIn : false,
+      // Signed in, the account list, the statement's six-month range and the asset overview are on screen.
+      isVisible: async () => signedIn && (
+        selector.includes("btn_td_orange_dtl")
+        || selector === 'label[for="dateType_5"]'
+        || selector === "text:資產總覽"
+      ),
       count: async () => selector.includes("btn_td_orange_dtl") && signedIn ? 1 : 0,
       click: async () => undefined,
       fill: async (value: string) => { credentialValues.set(selector, value); },
@@ -262,6 +268,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
       },
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
 
     const run = await provider.automation.taskRunById(result.taskRunId);
@@ -312,6 +319,7 @@ test("Post App dispatch names each unread statement's failure before commit", as
         executionHost: inProcessCheckHost({ browser: () => ({ async withPage(run) { return run(page); } }), capabilities: fixedCapabilities({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) }) }),
         environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
+        interventionTimers: failFastInterventionTimers,
       }), task.id);
       const taskRunId = result.taskRunId;
       assert.equal(result.status, "failed");
@@ -345,6 +353,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
       },
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
@@ -374,6 +383,7 @@ test("Post App dispatch without a verification route fails with a configuration 
       assistanceRoute: null,
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
+      interventionTimers: failFastInterventionTimers,
     }), task.id);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
     assert.ok(run?.events.some((event) => event.signal === "solver-route-unavailable"));
