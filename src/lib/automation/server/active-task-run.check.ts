@@ -980,6 +980,35 @@ test("a stop while paused ends the pause and the workflow's wait", async () => {
   await run.finish(fail("cancelled"));
 });
 
+test("cancelling while the pause is being recorded raises no unhandled rejection", async () => {
+  const { run, execution } = await runningManual();
+  await run.requestTakeOver();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  // A write that takes a few turns, as a real store's does.
+  const updateTaskRun = persistence.updateTaskRun;
+  persistence.updateTaskRun = async (...args) => {
+    for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    return await updateTaskRun.apply(persistence, args);
+  };
+  try {
+    const controller = new AbortController();
+    const paused = run.interventionSafePoint(controller.signal);
+    // The pause is reached; its record is still being written when the signal aborts.
+    controller.abort(new Error("cancelled mid-write"));
+    await assert.rejects(paused, /cancelled mid-write/u);
+    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    persistence.updateTaskRun = updateTaskRun;
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, []);
+  assert.equal(run.intervention(), null);
+  execution.end();
+  await run.finish(fail("cancelled"));
+});
+
 test("a pause ends with the execution that holds it, so a later timer cannot turn another failure into a timeout", async () => {
   const { run, taskRunId, execution, timers } = await runningManual();
   await run.requestTakeOver();

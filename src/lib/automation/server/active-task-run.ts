@@ -678,6 +678,9 @@ export function openActiveTaskRun(input: Readonly<{
         reached = current;
         signal.addEventListener("abort", onAbort, { once: true });
       });
+      // The pause can fail (cancel, execution end) while its record is still being
+      // written, before the await below; that failure is the caller's to see, not an unhandled one.
+      paused.catch(() => undefined);
       // Only one Run intervention is active at a time: behind another, the run
       // waits for you with its browser kept, and its 5 minutes start on its turn.
       const turn = interventionQueue.enter(taskRunId, () => {
