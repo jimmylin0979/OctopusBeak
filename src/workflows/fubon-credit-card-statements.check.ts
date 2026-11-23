@@ -10,7 +10,8 @@ import {
   StatementComponentAbsentError,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
+import type { Page } from "playwright";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
@@ -232,11 +233,14 @@ const statementBody = (period: number, mode: PeriodMode) => {
     <input type="hidden" name="dataGrid:currentPage" value="1">
     <input type="hidden" name="dataGrid:currentPageSize" value="2147483647">`;
 };
-const statementPage = (period: number, mode: PeriodMode) => `<form id="form1">
+/** With `inertTabs`, a period tab only counts its clicks, so the period never switches until a person switches it. */
+const statementPage = (period: number, mode: PeriodMode, inertTabs = false) => `<form id="form1">
     <input type="hidden" id="form1:period" name="form1:period" value="${period}">
   </form>
   ${["本期", "前一期", "前二期", "前三期", "前四期", "前五期"]
-    .map((label, index) => `<a href="javascript:void(0)" onclick="location.href='${STATEMENT_PATH}?period=${index + 1}'">${label}</a>`)
+    .map((label, index) => `<a href="javascript:void(0)" onclick="${inertTabs
+      ? "parent.tabClicks = (parent.tabClicks ?? 0) + 1"
+      : `location.href='${STATEMENT_PATH}?period=${index + 1}'`}">${label}</a>`)
     .join("")}
   ${statementBody(period, mode)}
   ${bankMask}`;
@@ -255,6 +259,9 @@ async function readCardThroughShell(
     modes: Readonly<Record<number, PeriodMode>>;
     periodOffsets: readonly number[];
     signal?: AbortSignal;
+    inertTabs?: boolean;
+    /** The run's Run intervention points, given the signed-in page. */
+    intervention?: (page: Page) => WorkflowInterventionPort;
     holdUnbilled?: () => void;
     currentCreditPage?: string;
     /**
@@ -292,7 +299,7 @@ async function readCardThroughShell(
           });
         case STATEMENT_PATH: {
           const period = Number(url.searchParams.get("period") ?? "1");
-          return await html(statementPage(period, options.modes[period] ?? "no-record"));
+          return await html(statementPage(period, options.modes[period] ?? "no-record", options.inertTabs));
         }
         case UNBILLED_PATH:
           if (options.holdUnbilled) {
@@ -309,6 +316,7 @@ async function readCardThroughShell(
       signal: options.signal ?? new AbortController().signal,
       text: strictSourceText,
       now: () => "2026-10-27T00:00:00.000Z",
+      ...(options.intervention ? { intervention: options.intervention(page) } : {}),
     };
     const snapshot = await readFubonCreditCardSourceSnapshot(
       page,
@@ -377,6 +385,31 @@ test("Fubon credit card reads every task through the 信用卡 menu and consumes
     { currentPage: undefined, currentPageSize: undefined, sourceDeclaredRowCount: undefined },
   ]);
   assert.deepEqual(read.activities, ["query", "query", "query", "query"]);
+});
+
+// ADR 0147: the switched period is an expected page state, so its wait is a
+// Run intervention safe point. A person who takes over while the tab is stuck
+// switches it themselves, and after Hand back the read goes on from the period
+// they left.
+test("a period tab that never switches is a Take over safe point, and the read goes on from the period the person opened", async () => {
+  let takeovers = 0;
+  const read = await readCardThroughShell({
+    modes: { 1: "available", 2: "available" },
+    periodOffsets: [1, 2],
+    inertTabs: true,
+    intervention: (page) => ({
+      safePoint: async () => {
+        const clicked = await page.evaluate(() => (window as unknown as { tabClicks?: number }).tabClicks ?? 0);
+        if (clicked === 0 || takeovers > 0) return "none";
+        takeovers += 1;
+        await page.frame({ name: "txnFrame" })!.goto(`${SITE_ORIGIN}${STATEMENT_PATH}?period=2`);
+        return "handed-back";
+      },
+      deadlineExpired: async () => "none",
+    }),
+  });
+  assert.equal(takeovers, 1);
+  assert.deepEqual(read.snapshot.statementPeriods, ["115/07", "115/06"]);
 });
 
 test("a current-credit page with replacement characters fails the card read", async () => {
