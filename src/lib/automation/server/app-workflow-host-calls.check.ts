@@ -37,7 +37,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function dispatcher(handlers: HostCallHandlers) {
+function dispatcher(handlers: HostCallHandlers, now?: () => number) {
   const stop = new AbortController();
   const replies: HostCallReplyFrame[] = [];
   let failures = 0;
@@ -49,6 +49,7 @@ function dispatcher(handlers: HostCallHandlers) {
     settled: () => settled,
     post: (frame) => replies.push(frame),
     protocolFailure: () => { failures += 1; },
+    ...(now ? { now } : {}),
   });
   return {
     channel,
@@ -75,9 +76,7 @@ test("the intervention host call has its own lane, a bound on safe-point consult
   assert.equal(contract.lane, "intervention");
   assert.equal(contract.duringStop, "drop");
   assert.equal(contract.failureCode, undefined, "a failed intervention is a protocol failure, never a typed answer");
-  // A Source sign-in wait consults it at most once a second for its 120 s
-  // deadline, restarted once after a takeover and after each of four pauses.
-  assert.ok(contract.maxPerRun >= 120 * 6 && Number.isFinite(contract.maxPerRun));
+  assert.ok(Number.isFinite(contract.maxPerRun));
 
   assert.deepEqual(contract.parseRequest({ at: "safe-point" }), { at: "safe-point" });
   // A step's expired deadline asks the host to pause the run on its own (ADR 0147).
@@ -105,6 +104,47 @@ test("the intervention host call has its own lane, a bound on safe-point consult
   assert.equal(host.replies.length, 1, "a stop abandons the pause unanswered");
   assert.equal(host.channel.idle(), true);
   assert.equal(host.failures(), 0);
+});
+
+test("a run's safe points are bounded by rate, so consulting once a second never runs out while a burst is refused", async () => {
+  let clock = 0;
+  const host = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  // Sign-in and every collection wait of a twelve-hour manual run, at the run's once-a-second consult.
+  for (let second = 0; second < 12 * 60 * 60; second += 1) {
+    clock = second * 1_000;
+    host.channel.receive(call("intervention", { at: "safe-point" }));
+    await settle();
+  }
+  await settle();
+  assert.equal(host.failures(), 0, "a long run is never refused");
+  assert.equal(host.replies.length, 12 * 60 * 60);
+
+  // A worker that consults as fast as it can is refused within its first second.
+  const runaway = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  let refusedAfter = 0;
+  for (let consult = 1; consult <= 1_000 && runaway.failures() === 0; consult += 1) {
+    runaway.channel.receive(call("intervention", { at: "safe-point" }));
+    await settle();
+    refusedAfter = consult;
+  }
+  assert.equal(runaway.failures(), 1);
+  assert.ok(refusedAfter <= 64, `refused after ${refusedAfter} consults`);
+});
+
+test("a run's expired deadlines are bounded by count, however long the run", async () => {
+  let clock = 0;
+  const host = dispatcher({ intervention: () => ({ resolution: "none" }) }, () => clock);
+  let answered = 0;
+  for (let hour = 0; hour < 1_000 && host.failures() === 0; hour += 1) {
+    clock = hour * 3_600_000;
+    host.channel.receive(call("intervention", { at: "deadline" }));
+    await settle();
+    answered = host.replies.length;
+  }
+  assert.equal(host.failures(), 1, "deadlines do not refill with time");
+  assert.equal(answered, HOST_CALL_CONTRACTS.intervention.kind === "request" ? HOST_CALL_CONTRACTS.intervention.maxPerRun : -1);
+  // Each pausing deadline spends one of the run's pauses, and each other one fails its step.
+  assert.ok(answered >= 64);
 });
 
 test("an event is answered only after its handler resolves", async () => {
