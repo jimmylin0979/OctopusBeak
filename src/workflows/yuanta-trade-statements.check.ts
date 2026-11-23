@@ -989,8 +989,9 @@ function fakeReportPage(landings: readonly ("report" | "error")[]) {
     },
     async waitForTimeout() {},
     context: () => ({ request: {} }),
-    locator: () => ({
-      isVisible: async () => false,
+    // A signed-in report page: the logout button shows, the disclaimer does not.
+    locator: (selector: string) => ({
+      isVisible: async () => selector === "#btnLogout",
       waitFor: async () => {},
     }),
   } as unknown as Page;
