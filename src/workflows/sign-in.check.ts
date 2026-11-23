@@ -897,6 +897,33 @@ test("a plan whose deadline classifies the page never pauses there", () =>
     assert.equal(asked, 0);
   }));
 
+test("a plan that opts out of pausing only before a takeover never pauses at its first deadline but does at the restarted one", async () => {
+  const plan = { timeoutMs: 600, takeoverTimeoutMs: 600, deadlineIntervention: "after-takeover" } as const;
+  await withPage("", async (page) => {
+    const run = fakeRun(page);
+    let asked = 0;
+    const intervention = pausesAtDeadline(async () => {
+      asked += 1;
+      return "handed-back";
+    });
+    const error = await failure(signIn({ ...run.context, intervention }, page, source({ takeover: dialogTakeover }), form(calls(), plan)));
+    assert.ok(error instanceof SignInDeadlineError);
+    assert.equal(error.afterTakeover, false);
+    assert.equal(asked, 0, "the first deadline is a verdict, so it never pauses");
+  });
+  await withPage(`setTimeout(() => ask(${js(TAKEOVER)}), 100)`, async (page) => {
+    const run = fakeRun(page);
+    let asked = 0;
+    const intervention = pausesAtDeadline(async () => {
+      asked += 1;
+      await page.evaluate("show()");
+      return "handed-back";
+    });
+    await signIn({ ...run.context, intervention }, page, source({ takeover: dialogTakeover }), form(calls(), plan));
+    assert.equal(asked, 1, "after a takeover the restarted deadline pauses like any other");
+  });
+});
+
 test("native dialogs keep their Dialog Policy while the run is paused at its deadline, and one that ends the sign-in still fails it", async () => {
   // The page raises a dialog while the person controls it; the pause itself never answers.
   const raiseWhilePaused = (page: Page, script: string) => pausesAtDeadline(async () => {

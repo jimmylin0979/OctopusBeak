@@ -552,8 +552,9 @@ function esunSignInPlan(credentials: EsunCredentials): FormPlan {
     session: { none: "needs live verification" },
     timeoutMs: 15_000,
     takeoverTimeoutMs: 60_000,
-    // The 15 s deadline classifies E.SUN's verification wall, which only the solver may pass (ADR 0039, 0147).
-    deadlineIntervention: false,
+    // Only the first 15 s deadline classifies E.SUN's verification wall, which only the solver may pass
+    // (ADR 0039, 0147); the 60 s one after a session takeover pauses like any other.
+    deadlineIntervention: "after-takeover",
   };
 }
 
