@@ -22,6 +22,7 @@ import { signalRunEvent, type WorkflowRunEvent } from "../run-event.ts";
 import type { AutomationPersistencePort } from "./store.ts";
 import { collectionNotification } from "./collection-summary.ts";
 import { userActionForFailure } from "../workflow-failures.ts";
+import { MAX_RUN_INTERVENTION_ENTRIES } from "../run-intervention.ts";
 import { createRunInterventionQueue, type RunInterventionQueue } from "./run-intervention-queue.ts";
 import { createTestPGlite } from"../../../ledger/pglite/baseline-test-template.ts";
 
@@ -842,6 +843,31 @@ test("a run records when the person watched it as metadata only, and its end clo
   assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["view-opened", "view-closed", "view-opened", "view-closed"]);
   await run.recordIntervention("view-opened");
   assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, 4, "a finished run records nothing more");
+});
+
+test("a run that ends with a view open records the close even when other entries follow the open", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  await run.transition("running");
+  await run.recordIntervention("view-opened");
+  await run.recordIntervention("take-over");
+  await run.recordIntervention("paused");
+  await run.finish(ok());
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["view-opened", "take-over", "paused", "view-closed"]);
+});
+
+test("a run keeps only the most recent intervention entries, in memory and in the store", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  await run.transition("running");
+  const cap = MAX_RUN_INTERVENTION_ENTRIES;
+  for (let index = 0; index < cap + 10; index += 1) {
+    await run.recordIntervention(index % 2 === 0 ? "view-opened" : "view-closed");
+  }
+  assert.equal(run.current().interventionLog?.length, cap);
+  assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, cap);
+  await run.recordIntervention("view-opened");
+  await run.finish(ok());
+  assert.equal((await persistence.taskRunById(taskRunId))?.interventionLog?.length, cap, "the closing entry respects the bound too");
 });
 
 test("the store keeps only known intervention actions with their times", async () => {
