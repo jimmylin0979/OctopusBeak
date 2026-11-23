@@ -49,18 +49,28 @@ export type TaskRowView = Readonly<{
   showProgressStatus: boolean;
   isOnboardingProgress: boolean;
   failure: TaskRowFailure | null;
+  /** The run is paused in a Run intervention, waiting for the person (ADR 0147). */
+  needsYou: boolean;
 }>;
+
+/** Whether the row's run is paused in a Run intervention and waits for the person. */
+export function runNeedsYou(row: Pick<AutomationTaskRow, "isActive" | "runIntervention">): boolean {
+  return row.isActive && row.runIntervention === "paused";
+}
 
 export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewContext): TaskRowView {
   const { dictionary } = context;
-  const statusLabel = taskStatusLabel(row, dictionary);
+  const needsYou = runNeedsYou(row);
+  const statusLabel = needsYou ? dictionary.automation.liveView.needsYou : taskStatusLabel(row, dictionary);
   const runStatus = taskRunStatus(row, context);
   const progressWorking = workflowProgressIsWorking(row);
   const isOnboardingProgress = row.id === context.onboardingProgressTaskId;
   return {
     statusLabel,
     runStatus,
-    syncStatus: syncStatus(row, runStatus, context),
+    syncStatus: needsYou
+      ? { tone: "warn", label: dictionary.automation.liveView.needsYou, time: "" }
+      : syncStatus(row, runStatus, context),
     lastSyncSummary: lastSyncSummary(row, context),
     statementResults: statementResults(row, dictionary),
     progressLabel: progressLabel(row, dictionary, statusLabel),
@@ -69,9 +79,10 @@ export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewConte
       || (row.isActive && row.status === "waiting_for_human")
       || (isTerminalAutomationStatus(row.status) && (row.status !== "completed" || isOnboardingProgress)),
     showProgressBar: progressWorking || (row.isActive && row.status === "waiting_for_human") || isOnboardingProgress,
-    showProgressStatus: row.status === "waiting_for_human" || row.status === "cancelling",
+    showProgressStatus: needsYou || row.status === "waiting_for_human" || row.status === "cancelling",
     isOnboardingProgress,
     failure: failure(row, context),
+    needsYou,
   };
 }
 

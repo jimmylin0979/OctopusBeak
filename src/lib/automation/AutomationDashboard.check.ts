@@ -395,6 +395,18 @@ assert.match(source, /step=\{present\(liveViewTask\)\.progressLabel\}/u, "the di
 // The dialog's Take over, waiting and controlling states follow the runtime's report of the run.
 assert.match(source, /intervention=\{liveViewTask\.runIntervention \?\? null\}/u);
 assert.match(source, /verifying=\{liveViewTask\.status === "waiting_for_human"\}/u, "Take over is unavailable while verifying");
+// A paused run says it needs the person even with no live view open (ADR 0147).
+assert.match(source, /\$: pausedTasks = live\.tasks\.filter\(runNeedsYou\);/u, "the notice follows the runtime's report of paused runs");
+assert.match(
+  source,
+  /\{#if pausedTasks\.length\}\s*<section class="card run-intervention-notices" role="alert"[\s\S]*?\{\$t\.automation\.liveView\.pausedNoticeTitle\}[\s\S]*?\{#each pausedTasks as task \(task\.id\)\}[\s\S]*?\{\$t\.automation\.liveView\.pausedNotice\(taskLabel\(task, \$locale\)\)\}[\s\S]*?onclick=\{\(\) => openLiveView\(task\)\}/u,
+  "an in-App notice names each paused source and opens its live view",
+);
+assert.match(
+  source,
+  /\{#if present\(task\)\.showProgressStatus\}\s*<span class=\{`chip \$\{present\(task\)\.needsYou \? "warn" : statusClass\(task\.status\)\}`\}>\{present\(task\)\.statusLabel\}<\/span>/u,
+  "the card's chip reads Needs you while its run is paused",
+);
 
 assert.match(
   source,

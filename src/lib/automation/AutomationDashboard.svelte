@@ -69,6 +69,7 @@ import { onboardingTaskDisclosure } from "$lib/onboarding/state.ts";
   import {
     countsOutsideTdccExclusions,
     presentTaskRow,
+    runNeedsYou,
     tdccExclusionLines,
     workflowEventFailureLabel,
     type TaskRowViewContext,
@@ -197,6 +198,8 @@ import type {
     ? live.tasks.find((task) => task.id === liveView?.taskId
       && task.runId === liveView?.runId && runLiveViewAvailable(task)) ?? null
     : null;
+  /** Runs paused in a Run intervention, each waiting for the person; the notice lists them. */
+  $: pausedTasks = live.tasks.filter(runNeedsYou);
 
   function openLiveView(task: AutomationTaskRow) {
     if (task.runId) liveView = { taskId: task.id, runId: task.runId };
@@ -882,6 +885,21 @@ import type {
     </section>
     </ProgressiveBlock>
 
+    {#if pausedTasks.length}
+      <section class="card run-intervention-notices" role="alert" aria-labelledby="run-intervention-notices-title">
+        <h2 id="run-intervention-notices-title">{$t.automation.liveView.pausedNoticeTitle}</h2>
+        {#each pausedTasks as task (task.id)}
+          <div class="run-intervention-notice">
+            <p>{$t.automation.liveView.pausedNotice(taskLabel(task, $locale))}</p>
+            <button class="button primary" type="button" aria-haspopup="dialog" onclick={() => openLiveView(task)}>
+              <Eye size={16} strokeWidth={2.2} aria-hidden="true" />
+              <span>{$t.automation.liveView.view}</span>
+            </button>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
     {@const detailsAutomation = selectAutomationBlockModel(pageModel, automationBlockData("details", data)?.automation, $state.runtime, $state.pendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
@@ -1061,7 +1079,7 @@ import type {
                     <div class="progress-description">
                       <span class="progress-copy" data-status={task.status}>{present(task).progressLabel}</span>
                       {#if present(task).showProgressStatus}
-                        <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
+                        <span class={`chip ${present(task).needsYou ? "warn" : statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
                     {:else}
@@ -1943,6 +1961,27 @@ import type {
     grid-template-columns: minmax(0, 1fr) auto;
     border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
     background: color-mix(in oklch, var(--accent-soft) 24%, var(--surface));
+  }
+
+  /* A run paused in a Run intervention (ADR 0147) reads like the other notices that need the person. */
+  .run-intervention-notices {
+    display: grid;
+    gap: 12px;
+    padding: 20px 30px;
+    border-color: color-mix(in oklch, var(--warn) 34%, var(--border));
+    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
+  }
+
+  .run-intervention-notices h2,
+  .run-intervention-notice p {
+    margin: 0;
+  }
+
+  .run-intervention-notice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px 22px;
   }
 
   .prerequisite-notices {

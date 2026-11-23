@@ -94,6 +94,24 @@ test("the sync line puts an active run first, then missing credentials, then the
   assert.equal(presentTaskRow(row({ status: "completed", isActive: false, latestStartedAt: null }), context("en")).runStatus.label, translations.en.automation.credentialSyncStatuses.never);
 });
 
+test("a run paused in a Run intervention says it needs you, in both languages, and keeps its step", () => {
+  for (const locale of ["en", "zh-TW"] as const) {
+    const running = presentTaskRow(row({ runTrigger: "manual" }), context(locale));
+    const paused = presentTaskRow(row({ runTrigger: "manual", runIntervention: "paused" }), context(locale));
+    const needsYou = translations[locale].automation.liveView.needsYou;
+    assert.equal(paused.needsYou, true);
+    assert.equal(paused.statusLabel, needsYou);
+    assert.equal(paused.showProgressStatus, true, "the card shows the chip beside its progress");
+    assert.deepEqual(paused.syncStatus, { tone: "warn", label: needsYou, time: "" });
+    assert.equal(paused.progressLabel, running.progressLabel, "the step stays named, as the live view shows it");
+    assert.equal(running.needsYou, false);
+    // A Take over still waiting for its safe point does not need the person yet.
+    assert.equal(presentTaskRow(row({ runTrigger: "manual", runIntervention: "requested" }), context(locale)).needsYou, false);
+  }
+  assert.equal(translations.en.automation.liveView.needsYou, "Needs you");
+  assert.doesNotMatch(translations["zh-TW"].automation.liveView.needsYou, HAS_LATIN_WORD);
+});
+
 test("collection progress names the activity and product, and a retry names the attempt", () => {
   const copy = translations.en.automation;
   const collecting = (params: Record<string, string | number | boolean>, overrides: Partial<AutomationTaskRow> = {}) =>

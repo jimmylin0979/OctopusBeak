@@ -234,6 +234,9 @@ const en = {
         exhausted: "This run has paused as often as it may. Let it finish or cancel it.",
       },
       failed: "That did not reach the run. Try again.",
+      needsYou: "Needs you",
+      pausedNoticeTitle: "A sync is paused and needs you",
+      pausedNotice: (task: string) => `${task} is paused on a page it could not get past. Open View, fix the page, and press Hand back within 5 minutes.`,
     },
     structureReport: {
       share: "Share structure report",
@@ -675,6 +678,9 @@ const zh: typeof en = {
         exhausted: "這次執行暫停的次數已達上限。請讓它跑完或取消它。",
       },
       failed: "操作沒有傳到執行中的頁面，請再試一次。",
+      needsYou: "需要你處理",
+      pausedNoticeTitle: "同步已暫停，需要你處理",
+      pausedNotice: (task: string) => `${task} 停在無法繼續的頁面。請按「檢視」處理頁面，並在 5 分鐘內按「交還」。`,
     },
     structureReport: {
       share: "分享結構報告",
