@@ -681,7 +681,11 @@ export function openActiveTaskRun(input: Readonly<{
       // Only one Run intervention is active at a time: behind another, the run
       // waits for you with its browser kept, and its 5 minutes start on its turn.
       const turn = interventionQueue.enter(taskRunId, () => {
-        if (pause !== reached) return;
+        // A pause that already ended must not hold the line for every run behind it.
+        if (pause !== reached) {
+          interventionQueue.leave(taskRunId);
+          return;
+        }
         reached.activate();
         void noteIntervention("paused", "run-intervention-paused");
       });
