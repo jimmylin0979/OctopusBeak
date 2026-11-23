@@ -19,6 +19,7 @@ import {
   type ActiveAutomationTaskRun,
   type TaskRunReport,
 } from "./active-task-run.ts";
+import { createRunInterventionQueue } from "./run-intervention-queue.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -86,6 +87,8 @@ export function createAutomationRunner(options: Readonly<{
   const runExecution = options.runExecution
     ?? createTaskRunExecution(options.executionHost ?? chromiumThreadHost);
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
+  // One line for every run this host opens: only one Run intervention is active at a time (ADR 0147).
+  const interventionQueue = createRunInterventionQueue();
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;
   let holds = 0;
@@ -182,6 +185,7 @@ export function createAutomationRunner(options: Readonly<{
       persistence: provider.automation,
       runtime,
       forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs,
+      interventionQueue,
     });
   }
 
