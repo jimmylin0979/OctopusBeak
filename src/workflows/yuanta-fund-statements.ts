@@ -616,7 +616,7 @@ async function waitForFundTables(
   options: Readonly<{ replacingMarked?: boolean }> = {},
 ): Promise<BrowserScope> {
   const shows = fundTablesShow(bodyPattern);
-  return await site.frames.until(async () => {
+  return await site.expect.until(async () => {
     for (const scope of site.frames.scopes()) {
       if (options.replacingMarked && await isMarkedDocument(scope)) continue;
       if (await shows(scope)) return scope;
@@ -662,7 +662,7 @@ async function openOffHourOrders(site: YuantaEbankSite): Promise<BrowserScope> {
     /doOffhourQuery|營業時間外交易查詢/,
     "YuanTa fund investment overview off-hour link",
   );
-  const link = await site.frames.firstVisible(
+  const link = await site.expect.firstVisible(
     (candidate) => candidate.locator('a[onclick*="doOffhourQuery"]'),
     "YuanTa regular fund off-hour orders link",
     { in: scope },
@@ -684,7 +684,7 @@ async function queryOffHourOrders(
   startDate: string,
   endDate: string,
 ): Promise<BrowserScope> {
-  const scope = await site.frames.scopeWith("#sdate, #edate");
+  const scope = await site.expect.scopeWith("#sdate, #edate");
   await site.frames.withSignal((signal) => scope.locator("#sdate").fill(startDate, { signal }));
   await site.frames.withSignal((signal) => scope.locator("#edate").fill(endDate, { signal }));
   await markShownDocuments(site);
@@ -868,7 +868,7 @@ async function parseFundTables(
   checkMarkup: FundMarkupCheck = (html) => sourceText.assertIntact(html),
 ): Promise<ParsedTable[]> {
   site.frames.signal.throwIfAborted();
-  const scope = await site.frames.scopeWith(FUND_TABLE_SELECTOR);
+  const scope = await site.expect.scopeWith(FUND_TABLE_SELECTOR);
   await checkMarkup(await site.frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })));
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();

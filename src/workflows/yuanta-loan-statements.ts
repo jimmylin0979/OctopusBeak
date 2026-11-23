@@ -559,7 +559,7 @@ async function findLoanStatementForm(
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
   const { frames } = site;
-  return await frames.until(async () => {
+  return await site.expect.until(async () => {
     for (const scope of frames.scopes()) {
       if (await isLoanStatementForm(scope)) return scope;
     }
@@ -666,7 +666,7 @@ async function queryLoanAccount(
     ),
     frames.withSignal((signal) => scope.locator("#submitbutton").click({ signal })),
   ]);
-  await frames.scopeWith("#resultdiv");
+  await site.expect.scopeWith("#resultdiv");
 }
 
 async function parseLoanStatementRows(
@@ -680,7 +680,7 @@ async function parseLoanStatementRows(
   pagination: YuantaLoanPaginationSignal;
 }> {
   const { frames } = site;
-  const scope = await frames.scopeWith("#resultdiv");
+  const scope = await site.expect.scopeWith("#resultdiv");
   const tables = scope.locator("table.normalTable");
   const tableCount = await frames.race(tables.count());
   if (tableCount === 0)
@@ -829,7 +829,7 @@ async function traverseYuantaLoanStatementPages(
     pages.push(parsed);
     if (!parsed.pagination.nextPageTarget) break;
 
-    const scope = await frames.scopeWith("#resultdiv");
+    const scope = await site.expect.scopeWith("#resultdiv");
     const nextControl = await findYuantaLoanNextPageControl(frames, scope);
     if (!nextControl)
       throw new Error(
@@ -838,7 +838,7 @@ async function traverseYuantaLoanStatementPages(
     const previousResult = await frames.race(readYuantaLoanResultMarkup(scope));
     await frames.withSignal((signal) => nextControl.click({ force: true, signal }));
     await frames.settle();
-    await frames.until(async () => {
+    await site.expect.until(async () => {
       for (const candidate of frames.scopes()) {
         const result = await readYuantaLoanResultMarkup(candidate);
         if (result !== null && result !== previousResult) return true;

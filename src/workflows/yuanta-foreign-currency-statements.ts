@@ -1695,7 +1695,7 @@ export async function waitForYuantaForeignCurrencyResultTransition(
   previousFingerprint: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await site.frames.until(
+  await site.expect.until(
     async () =>
       (await readYuantaForeignCurrencyResultFingerprint(site)) !== previousFingerprint,
     "YuanTa foreign-currency query did not produce a fresh result state.",
@@ -1859,7 +1859,7 @@ async function chooseDateRange(
   site: YuantaEbankSite,
   input: WorkflowInput,
 ): Promise<void> {
-  const scope = await site.frames.scopeWith("#acctno");
+  const scope = await site.expect.scopeWith("#acctno");
   const { quickLabel, startDate, endDate } = input.queryRange;
   await site.chooseDuration(
     scope,
@@ -1876,7 +1876,7 @@ async function waitForCurrencyOptions(
   timeoutMs = 10_000,
 ): Promise<void> {
   const { frames } = site;
-  await frames.until(async () => {
+  await site.expect.until(async () => {
     if (
       expectedAccountValue !== undefined &&
       (await readYuantaForeignCurrencySelectedAccount(frames, scope)) !==
@@ -1960,7 +1960,7 @@ async function selectAccount(
   account: AccountOption,
 ): Promise<void> {
   const { frames } = site;
-  const originalScope = await frames.scopeWith("#acctno");
+  const originalScope = await site.expect.scopeWith("#acctno");
   await frames.withSignal((signal) => originalScope.locator("#acctno").selectOption(account.value, { signal }));
   await settleYuantaForeignCurrencyScopeNavigation(site, originalScope);
   await frames.pause(ACCOUNT_CHANGE_PAUSE_MS);
@@ -1994,7 +1994,7 @@ export async function readYuantaForeignCurrencyAccountOptions(
   _filters: string[] = [],
 ): Promise<AccountOption[]> {
   const { frames } = site;
-  const scope = await frames.scopeWith("#acctno");
+  const scope = await site.expect.scopeWith("#acctno");
   const options = scope.locator("#acctno option");
   const count = await frames.race(options.count());
   const availableAccounts: AccountOption[] = [];
@@ -2025,7 +2025,7 @@ export async function readYuantaForeignCurrencyOptions(
   filters: string[] = [],
 ): Promise<CurrencyOption[]> {
   const { frames } = site;
-  const scope = await frames.scopeWith("#acctno");
+  const scope = await site.expect.scopeWith("#acctno");
   await waitForCurrencyOptions(site, scope);
 
   const options = scope.locator('select[name="currency"] option');
@@ -2070,7 +2070,7 @@ async function queryAccountCurrency(
   const { frames } = site;
   await selectAccount(site, account);
 
-  const currencyScope = await frames.scopeWith("#acctno");
+  const currencyScope = await site.expect.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
     frames,
     currencyScope,
@@ -2082,7 +2082,7 @@ async function queryAccountCurrency(
     .selectOption(currency.value, { signal }));
   await chooseDateRange(site, input);
 
-  const channelScope = await frames.scopeWith("#acctno");
+  const channelScope = await site.expect.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
     frames,
     channelScope,
@@ -2093,7 +2093,7 @@ async function queryAccountCurrency(
     .locator("#channelType")
     .selectOption(channelTypeValues[input.channelType], { signal }));
 
-  const submitScope = await frames.scopeWith("#acctno");
+  const submitScope = await site.expect.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
     frames,
     submitScope,
