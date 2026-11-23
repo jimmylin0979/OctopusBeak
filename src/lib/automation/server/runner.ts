@@ -17,6 +17,7 @@ import {
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type ActiveAutomationTaskRun,
+  type InterventionTimers,
   type TaskRunReport,
 } from "./active-task-run.ts";
 import { createRunInterventionQueue } from "./run-intervention-queue.ts";
@@ -82,6 +83,8 @@ export function createAutomationRunner(options: Readonly<{
   settings: AutomationSettingsStore;
   userDataDirectory: string;
   forceQuitAvailableAfterMs?: number;
+  /** The timers a paused Run intervention's 5 minutes run on; checks shorten them. */
+  interventionTimers?: InterventionTimers;
 }>) {
   const { runtime, provider } = options;
   const runExecution = options.runExecution
@@ -185,6 +188,7 @@ export function createAutomationRunner(options: Readonly<{
       persistence: provider.automation,
       runtime,
       forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs,
+      ...(options.interventionTimers ? { interventionTimers: options.interventionTimers } : {}),
       interventionQueue,
     });
   }

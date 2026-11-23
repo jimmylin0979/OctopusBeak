@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { MessageChannel } from "node:worker_threads";
 import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
-import { openActiveTaskRun, type ActiveAutomationTaskRun, type WorkflowExecution } from "./active-task-run.ts";
+import { openActiveTaskRun, type ActiveAutomationTaskRun, type InterventionTimers, type WorkflowExecution } from "./active-task-run.ts";
 import {
   createAppWorkflowHumanAssistancePort,
   type HumanAssistanceRoute,
@@ -87,6 +87,20 @@ export async function startForCheck(runtime: Pick<AutomationRuntime, "start">, t
 }
 
 /**
+ * Timers that run a paused Run intervention's 5 minutes in a few seconds, so a
+ * check whose fake page never reaches an expected page state fails with
+ * `run-intervention-timed-out` at once instead of after 5 real minutes.
+ */
+export const failFastInterventionTimers: InterventionTimers = {
+  setTimeout: (callback) => {
+    const timer = setTimeout(callback, 2_000);
+    timer.unref?.();
+    return timer;
+  },
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
+/**
  * A runtime over `provider` whose rounds run on `executionHost`, with every
  * source enabled, the settings `environment` names in settings.json and the
  * rest of it in credentials.json, in a directory of their own. User data is
@@ -106,9 +120,11 @@ export function runtimeForCheck(
     userDataDirectory?: string;
     assistanceRoute?: HumanAssistanceRoute | null;
     executions?: WorkflowExecution[];
+    /** The timers a paused Run intervention's 5 minutes run on, `failFastInterventionTimers` for a check that expects no pause. */
+    interventionTimers?: InterventionTimers;
   }>,
 ): AutomationRuntime {
-  const { executionHost, assistanceRoute, executions } = options;
+  const { executionHost, assistanceRoute, executions, interventionTimers } = options;
   const execute = createTaskRunExecution(executionHost);
   const directory = mkdtempSync(join(tmpdir(), "task-run-check-"));
   process.once("exit", () => rmSync(directory, { recursive: true, force: true }));
@@ -125,6 +141,7 @@ export function runtimeForCheck(
   return createAutomationRuntime({ ...provider, pgliteWorkflow: CHECK_PGLITE_RPC }, {
     ...host,
     userDataDirectory: resolve(options.userDataDirectory ?? "."),
+    ...(interventionTimers ? { interventionTimers } : {}),
     runExecution: (plan, run, round) => execute(
       plan,
       executions ? observingExecutions(run, executions) : run,
