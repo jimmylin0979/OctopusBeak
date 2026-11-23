@@ -153,13 +153,21 @@
     else send({ type: "drag", x: from.x, y: from.y, toX: to.x, toY: to.y });
   }
 
-  const NAMED_KEYS = new Set(["Enter", "Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+  // Tab is left out on purpose: the control must never trap the keyboard.
+  const NAMED_KEYS = new Set(["Enter", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
   function onKey(event: KeyboardEvent) {
+    // An input method's own keystrokes are not the text; it reports that when the composition ends.
+    if (event.isComposing) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (!NAMED_KEYS.has(event.key) && [...event.key].length !== 1) return;
     event.preventDefault();
     send({ type: "press", key: event.key });
+  }
+
+  /** Text an input method composed, such as Chinese, is typed whole rather than key by key. */
+  function onComposed(event: CompositionEvent) {
+    if (event.data) send({ type: "type", text: event.data });
   }
 </script>
 
@@ -169,6 +177,7 @@
   subtitle={controlling ? copy.controlling : copy.readOnly}
   width="min(960px, 100%)"
   {onClose}
+  closable={!controlling}
 >
   <div class="modal-body live-view-body">
     <p class="live-view-step">{copy.currentStep(step)}</p>
@@ -182,6 +191,7 @@
             onpointerdown={onPress}
             onpointerup={onRelease}
             onkeydown={onKey}
+            oncompositionend={onComposed}
           >
             <img
               class="live-view-frame"

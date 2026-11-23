@@ -128,3 +128,22 @@ test("the dialog keeps the frame inert and drops frames of other views", () => {
   assert.match(source, /frame\.viewId !== view\.viewId|frame\.viewId === viewId/u, "a frame from another view is dropped");
   assert.doesNotMatch(source, /localStorage|sessionStorage|indexedDB/u, "frames are never kept beyond the open dialog");
 });
+
+test("while the person controls the page the dialog cannot be dismissed, only handed back or given up", async () => {
+  await withRenderer(async (render) => {
+    const controlling = await render(DIALOG, { ...props, view: live, intervention: "paused" });
+    const disabledX = /<button[^>]*class="modal-close[^"]*"[^>]*\sdisabled/u;
+    assert.match(controlling, disabledX, "the X is disabled");
+    const watching = await render(DIALOG, { ...props, view: live, intervention: null });
+    assert.doesNotMatch(watching, disabledX, "a watched run still closes freely");
+  });
+  assert.match(source, /<Modal[^>]*closable=\{!controlling\}/u, "Escape and the backdrop wait for Hand back or Give up too");
+});
+
+test("the controlled page does not trap Tab, and takes composed text as typed text", () => {
+  const named = source.match(/const NAMED_KEYS = new Set\(\[([^\]]*)\]\)/u)?.[1] ?? "";
+  assert.doesNotMatch(named, /"Tab"/u, "Tab leaves the control instead of reaching the page");
+  assert.match(controllingBranch, /oncompositionend=/u, "an IME's composed text arrives on the control");
+  assert.match(source, /function onComposed[\s\S]*?send\(\{ type: "type", text/u, "composed text goes through the type input");
+  assert.match(source, /function onKey[\s\S]*?isComposing/u, "keys inside a composition are not sent one by one");
+});
