@@ -1079,7 +1079,7 @@ import type {
                     <div class="progress-description">
                       <span class="progress-copy" data-status={task.status}>{present(task).progressLabel}</span>
                       {#if present(task).showProgressStatus}
-                        <span class={`chip ${present(task).needsYou ? "warn" : statusClass(task.status)}`}>{present(task).statusLabel}</span>
+                        <span class={`chip ${present(task).needsYou || present(task).waitingForYou ? "warn" : statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
                     {:else}
