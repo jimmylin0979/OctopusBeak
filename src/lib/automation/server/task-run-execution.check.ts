@@ -38,6 +38,7 @@ import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.
 async function createRun(
   provider: ReturnType<typeof createPgliteOperationalProvider>,
   task: NonNullable<ReturnType<typeof taskById>>,
+  scheduledAtUtc?: string,
 ) {
   const created = await provider.automation.createTaskRun({
     taskId: task.id,
@@ -46,6 +47,7 @@ async function createRun(
     attempt: 1,
     maxAttempts: task.maxAttempts,
     startedAt: new Date().toISOString(),
+    ...(scheduledAtUtc ? { scheduledAtUtc } : {}),
   });
   return created.taskRunId;
 }
@@ -920,6 +922,129 @@ test("a worker's safe point pauses a manual run through the intervention host ca
     assert.equal(timedOut.finished.status, "failed");
     assert.equal(timedOut.finished.appWorkflowOutcome?.errorCode, "run-intervention-timed-out");
     assert.deepEqual(timedOut.finished.interventionLog?.map((entry) => entry.action), ["take-over", "paused", "timed-out"]);
+  } finally {
+    await store.close();
+  }
+});
+
+/**
+ * A worker whose Source sign-in deadline expires: it asks to pause at the
+ * deadline point, re-checks after each Hand back (finding the page fixed
+ * once `fixedAfter` hand-backs have come), and on `none` fails the way the
+ * step does, with its failure event naming the step and a step-wait timeout.
+ */
+class DeadlineFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
+  readonly workerData: AppWorkflowWorkerStart;
+  readonly answers: string[] = [];
+  private readonly calls = new ScriptedHostCalls();
+  private readonly fixedAfter: number;
+  constructor(workerData: AppWorkflowWorkerStart, fixedAfter = Number.POSITIVE_INFINITY) {
+    super();
+    this.workerData = workerData;
+    this.fixedAfter = fixedAfter;
+    setImmediate(() => {
+      this.emit("online");
+      this.emit("message", this.calls.call("sign-in-started", "event", {
+        event: { runId: workerData.taskRunId, stage: "authentication", outcome: "started", code: "authentication-started", occurredAt: "2026-11-23T00:00:00.000Z" },
+      }));
+    });
+  }
+  private deadline() {
+    this.emit("message", this.calls.call("deadline", "intervention", { at: "deadline" }));
+  }
+  private end(frame: Record<string, unknown>) {
+    setImmediate(() => {
+      this.emit("message", { protocolVersion: 3, taskRunId: this.workerData.taskRunId, ...frame });
+      this.emit("exit", 0);
+    });
+  }
+  postMessage(frame: AppWorkflowWorkerInboundFrame) {
+    if (frame.kind === "cancel") return this.end({ kind: "cancelled" });
+    const answered = this.calls.answered(frame);
+    if (frame.kind !== "reply" || !frame.ok) return;
+    if (answered === "sign-in-started") return void setImmediate(() => this.deadline());
+    if (answered === "run-failed") return this.end({ kind: "failed", errorCode: "authentication-timeout" });
+    if (answered !== "deadline") return;
+    const { resolution } = frame.result as { resolution: string };
+    this.answers.push(resolution);
+    const handedBack = this.answers.filter((answer) => answer === "handed-back").length;
+    if (resolution === "handed-back" && handedBack >= this.fixedAfter) return this.end({ kind: "completed", summary: null });
+    if (resolution === "handed-back") return void setImmediate(() => this.deadline());
+    if (resolution !== "none") return this.end({ kind: "failed", errorCode: "run-intervention-timed-out" });
+    this.emit("message", this.calls.call("run-failed", "event", {
+      event: {
+        runId: this.workerData.taskRunId, stage: "finalization", outcome: "failed", code: "run-failed",
+        occurredAt: "2026-11-23T00:02:00.000Z",
+        stoppedAt: { step: "authentication-started", page: { kind: "step-wait-timeout", host: "bank.test", path: "/login" } },
+      },
+    }));
+  }
+  terminate() {
+    setImmediate(() => this.emit("exit", 1));
+    return Promise.resolve(1);
+  }
+}
+
+test("a sign-in deadline pauses a manual run through the intervention host call, re-checks after each Hand back, and fails past the cap", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
+    const scenario = async (options: Readonly<{ scheduledAtUtc?: string; fixedAfter?: number }>) => {
+      const taskRunId = await createRun(provider, task, options.scheduledAtUtc);
+      const runtime = createAutomationRuntimeState();
+      const run = openActiveTaskRun({
+        run: (await provider.automation.taskRunById(taskRunId))!,
+        persistence: provider.automation,
+        runtime,
+        interventionTimers: { setTimeout: () => null, clearTimeout: () => undefined },
+      });
+      let worker: DeadlineFakeWorker | undefined;
+      const execute = createTaskRunExecution(inProcessCheckHost({
+        scriptedWorker: (start) => (worker = new DeadlineFakeWorker(start, options.fixedAfter)),
+      }));
+      const reported = execute(plan, run, { attempt: 1, maxAttempts: 1, executionId: "round-1", retrying: false });
+      const cardStates: (string | undefined)[] = [];
+      // The person hands back every pause; the run alone decides when to stop pausing.
+      let ended = false;
+      void reported.finally(() => (ended = true));
+      const person = (async () => {
+        while (!ended) {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          if (run.intervention() !== "paused") continue;
+          cardStates.push(runtime.snapshot().tasks.find((entry) => entry.runId === taskRunId)?.intervention);
+          await run.handBack();
+        }
+      })();
+      const result = await reported;
+      await person;
+      const finished = await run.finish(result);
+      return { finished, answers: worker!.answers, cardStates };
+    };
+
+    const fixed = await scenario({ fixedAfter: 1 });
+    assert.deepEqual(fixed.answers, ["handed-back"], "the deadline paused the run without a Take over");
+    assert.deepEqual(fixed.cardStates, ["paused"], "the runtime reports the pause to the card");
+    assert.equal(fixed.finished.status, "completed");
+    assert.deepEqual(fixed.finished.interventionLog?.map((entry) => entry.action), ["paused", "handed-back"]);
+
+    const broken = await scenario({});
+    assert.deepEqual(broken.answers, ["handed-back", "handed-back", "handed-back", "handed-back", "none"], "one pause and three more, then the step fails");
+    assert.equal(broken.finished.status, "failed");
+    assert.equal(broken.finished.appWorkflowOutcome?.errorCode, "authentication-timeout");
+    assert.deepEqual(broken.finished.appWorkflowOutcome?.stoppedAt?.page, { kind: "step-wait-timeout", host: "bank.test", path: "/login" });
+
+    const scheduled = await scenario({ scheduledAtUtc: "2026-11-23T01:00:00.000Z" });
+    assert.deepEqual(scheduled.answers, ["none"], "a scheduled run never waits for a person");
+    assert.equal(scheduled.finished.status, "failed");
+    assert.equal(scheduled.finished.appWorkflowOutcome?.errorCode, "authentication-timeout");
+    assert.deepEqual(scheduled.finished.appWorkflowOutcome?.stoppedAt, {
+      step: "authentication-started",
+      page: { kind: "step-wait-timeout", host: "bank.test", path: "/login" },
+    });
+    assert.deepEqual(scheduled.finished.interventionLog ?? [], []);
   } finally {
     await store.close();
   }

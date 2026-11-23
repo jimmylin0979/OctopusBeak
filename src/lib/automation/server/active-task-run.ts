@@ -44,6 +44,7 @@ import {
   MAX_RUN_INTERVENTION_PAUSES,
   RUN_INTERVENTION_TIMEOUT_MS,
   runTrigger,
+  type InterventionPoint,
   type RunInterventionAction,
   type RunInterventionEntry,
   type RunInterventionResolution,
@@ -219,12 +220,15 @@ export type ActiveAutomationTaskRun = Readonly<{
    */
   requestTakeOver(): Promise<TakeOverResult>;
   /**
-   * A workflow safe point, reached through the intervention host call. Null at
-   * once when no Take over is waiting; otherwise the run pauses here until the
-   * person hands back or gives up, or 5 minutes pass. Rejects when `signal`
-   * aborts first.
+   * A workflow intervention point, reached through the intervention host call.
+   * At a `safe-point` (the default) the run pauses only when a Take over is
+   * waiting. At a `deadline`, a step's wait for an expected page state timed
+   * out, and the run pauses on its own whenever Take over would be accepted
+   * (ADR 0147). Null at once when the run does not pause; otherwise it pauses
+   * until the person hands back or gives up, or 5 minutes pass. Rejects when
+   * `signal` aborts first.
    */
-  interventionSafePoint(signal: AbortSignal): Promise<RunInterventionResolution | null>;
+  interventionSafePoint(signal: AbortSignal, at?: InterventionPoint): Promise<RunInterventionResolution | null>;
   /** Resume the paused run from its current step. False when nothing is paused. */
   handBack(): Promise<boolean>;
   /** End the paused run as a cancel. False when nothing is paused. */
@@ -558,6 +562,19 @@ export function openActiveTaskRun(input: Readonly<{
 
   const refused = (reason: TakeOverRefusal): TakeOverResult => ({ ok: false, refused: reason });
 
+  /**
+   * Why the run may not begin a new Run intervention now, or null when it may.
+   * Take over and an expired deadline ask the same question, so they cannot
+   * drift apart; a request already standing is the caller's to judge.
+   */
+  const interventionRefusal = (): Exclude<TakeOverRefusal, "pending"> | null => {
+    if (trigger !== "manual") return "not-manual";
+    if (row.status === "waiting_for_human") return "verifying";
+    if (finishing || stop !== null || row.status !== "running") return "not-running";
+    if (pauses >= MAX_RUN_INTERVENTION_PAUSES) return "exhausted";
+    return null;
+  };
+
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
@@ -591,20 +608,22 @@ export function openActiveTaskRun(input: Readonly<{
     recordIntervention,
     intervention: () => intervention,
     async requestTakeOver() {
-      if (trigger !== "manual") return refused("not-manual");
-      if (row.status === "waiting_for_human") return refused("verifying");
-      if (finishing || stop !== null || row.status !== "running") return refused("not-running");
+      const refusal = interventionRefusal();
+      if (refusal !== null && refusal !== "exhausted") return refused(refusal);
       if (intervention !== null) return refused("pending");
-      if (pauses >= MAX_RUN_INTERVENTION_PAUSES) return refused("exhausted");
+      if (refusal !== null) return refused(refusal);
       intervention = "requested";
       publish();
       await noteIntervention("take-over", "run-intervention-requested");
       return { ok: true };
     },
-    async interventionSafePoint(signal) {
+    async interventionSafePoint(signal, at = "safe-point") {
       signal.throwIfAborted();
       // A Verification Stage is never paused: only its solver completes it (ADR 0039).
-      if (intervention !== "requested" || finishing || stop !== null || row.status !== "running") return null;
+      if (finishing || stop !== null || row.status !== "running") return null;
+      // An expired deadline pauses as if Take over had been pressed there, within the same cap.
+      if (at === "deadline" && intervention === null && interventionRefusal() === null) intervention = "requested";
+      if (intervention !== "requested") return null;
       intervention = "paused";
       pauses += 1;
       publish();

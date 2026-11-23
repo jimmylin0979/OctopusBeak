@@ -1036,3 +1036,88 @@ test("a run pauses once and then at most three more times", async () => {
   execution.end();
   await run.finish(ok());
 });
+
+// A step's expired deadline (ADR 0147): the run pauses on its own, as if Take
+// over had been pressed at that point, through the same pause.
+test("an expired deadline pauses a manual run with no Take over, and Hand back resumes it", async () => {
+  const { run, taskRunId, execution, published, timers } = await runningManual();
+  const paused = run.interventionSafePoint(run.signal, "deadline");
+  assert.equal(await settledOrNot(paused), "unsettled", "the workflow waits at its deadline");
+  assert.equal(run.intervention(), "paused");
+  assert.equal(published()?.intervention, "paused", "the card hears the run needs the person");
+  assert.equal(timers.pending(), 1, "the 5 minutes start with the pause");
+  assert.equal(await run.handBack(), true);
+  assert.equal(await paused, "handed-back");
+  assert.equal(run.intervention(), null);
+  // Nobody pressed Take over, so the record says only that the run paused.
+  assert.deepEqual(await interventionActions(taskRunId), ["paused", "handed-back"]);
+  assert.deepEqual(await storedSignals(taskRunId), ["run-intervention-paused", "run-intervention-handed-back"]);
+  execution.end();
+  await run.finish(ok());
+  assert.equal((await persistence.taskRunById(taskRunId))?.status, "completed");
+});
+
+test("an expired deadline takes up a Take over still waiting, and pauses once", async () => {
+  const { run, taskRunId, execution } = await runningManual();
+  assert.deepEqual(await run.requestTakeOver(), { ok: true });
+  const paused = run.interventionSafePoint(run.signal, "deadline");
+  await settledOrNot(paused);
+  assert.equal(run.intervention(), "paused");
+  await run.handBack();
+  assert.equal(await paused, "handed-back");
+  assert.deepEqual(await interventionActions(taskRunId), ["take-over", "paused", "handed-back"]);
+  execution.end();
+  await run.finish(ok());
+});
+
+test("five minutes paused at a deadline without the person end the run with a User-action Failure", async () => {
+  const { run, taskRunId, execution, timers } = await runningManual();
+  const paused = run.interventionSafePoint(run.signal, "deadline");
+  await settledOrNot(paused);
+  timers.advance(5 * 60_000);
+  assert.equal(await paused, "timed-out");
+  execution.end();
+  await run.finish(fail("run-intervention-timed-out"));
+  const finished = await persistence.taskRunById(taskRunId);
+  assert.equal(finished?.appWorkflowOutcome?.errorCode, "run-intervention-timed-out");
+  assert.deepEqual(finished?.interventionLog?.map((entry) => entry.action), ["paused", "timed-out"]);
+});
+
+test("an expired deadline never pauses a scheduled run, a Verification Stage, or a run that is not running", async () => {
+  const scheduled = await open({ taskId: "sinopac-statements", scheduledAtUtc: "2026-11-22T01:00:00.000Z" });
+  await scheduled.run.transition("running");
+  assert.equal(await scheduled.run.interventionSafePoint(scheduled.run.signal, "deadline"), null);
+  assert.equal(scheduled.run.intervention(), null);
+  await scheduled.run.finish(fail("authentication-timeout"));
+  assert.deepEqual(await interventionActions(scheduled.taskRunId), [], "a refusal records nothing");
+  assert.deepEqual(await storedSignals(scheduled.taskRunId), []);
+
+  const { run, taskRunId, execution } = await runningManual();
+  await run.transition("waiting_for_human");
+  // A timeout inside a Verification Stage stays the solver's failure (ADR 0039).
+  assert.equal(await run.interventionSafePoint(run.signal, "deadline"), null);
+  assert.equal(run.intervention(), null);
+  await run.transition("running");
+  await run.requestStop("cancelled");
+  assert.equal(await run.interventionSafePoint(new AbortController().signal, "deadline"), null, "a stopping run fails as before");
+  execution.end();
+  await run.finish(fail("cancelled"));
+  assert.deepEqual(await interventionActions(taskRunId), []);
+});
+
+test("deadline pauses and Take over pauses share one cap: one pause and three more", async () => {
+  const { run, execution } = await runningManual();
+  for (const at of ["deadline", "safe-point", "deadline", "deadline"] as const) {
+    if (at === "safe-point") assert.deepEqual(await run.requestTakeOver(), { ok: true });
+    const paused = run.interventionSafePoint(run.signal, at);
+    await settledOrNot(paused);
+    assert.equal(run.intervention(), "paused", `the ${at} pause`);
+    await run.handBack();
+    assert.equal(await paused, "handed-back");
+  }
+  assert.equal(await run.interventionSafePoint(run.signal, "deadline"), null, "a fourth further pause is refused, so the step fails");
+  assert.equal(run.intervention(), null);
+  assert.deepEqual(await run.requestTakeOver(), { ok: false, refused: "exhausted" });
+  execution.end();
+  await run.finish(fail("authentication-timeout"));
+});
