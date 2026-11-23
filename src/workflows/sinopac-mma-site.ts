@@ -3,6 +3,8 @@ import { fail } from "../lib/preview-sources/source-kit.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderBodyAcquisition, ProviderResponseReader } from "./provider-response-reader.ts";
 import { frameScope, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 
 export const SINOPAC_MMA_ORIGIN = "https://mma.sinopac.com";
 const ROUTE_TIMEOUT_MS = 60_000;
@@ -48,7 +50,8 @@ export type SinopacMmaSite = Readonly<{
   post(path: string, init?: SinopacMmaPostInit): Promise<SinopacMmaResponse>;
 }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal }>;
+/** The run's signal and, for a manual run, its Run intervention points, which the route's page wait consults (ADR 0147). */
+type SiteContext = Readonly<{ signal: AbortSignal; intervention?: WorkflowInterventionPort }>;
 
 const originOf = (href: string): string | null => {
   try {
@@ -62,7 +65,7 @@ export function sinopacMmaSite(page: Page, context: SiteContext): SinopacMmaSite
   const frames = frameScope(page, context.signal);
 
   const showing = (ready: NonNullable<SinopacMmaRoute["ready"]>, description: string) =>
-    frames.until(async () => {
+    expectPageState(frames, context.intervention, async () => {
       for (const scope of frames.scopes()) {
         if (await ready(scope)) return scope;
       }
