@@ -112,6 +112,24 @@ test("a run paused in a Run intervention says it needs you, in both languages, a
   assert.doesNotMatch(translations["zh-TW"].automation.liveView.needsYou, HAS_LATIN_WORD);
 });
 
+test("a run paused behind another's intervention says it is waiting for you, not that it needs you now", () => {
+  for (const locale of ["en", "zh-TW"] as const) {
+    const running = presentTaskRow(row({ runTrigger: "manual" }), context(locale));
+    const waiting = presentTaskRow(row({ runTrigger: "manual", runIntervention: "waiting" }), context(locale));
+    const waitingForYou = translations[locale].automation.liveView.waitingForYou;
+    assert.equal(waiting.waitingForYou, true);
+    assert.equal(waiting.needsYou, false, "only the active intervention needs you now");
+    assert.equal(waiting.statusLabel, waitingForYou);
+    assert.equal(waiting.showProgressStatus, true);
+    assert.deepEqual(waiting.syncStatus, { tone: "warn", label: waitingForYou, time: "" });
+    assert.equal(waiting.progressLabel, running.progressLabel, "the step stays named");
+    assert.equal(running.waitingForYou, false);
+    assert.notEqual(waitingForYou, translations[locale].automation.liveView.needsYou);
+  }
+  assert.equal(translations.en.automation.liveView.waitingForYou, "Waiting for you");
+  assert.doesNotMatch(translations["zh-TW"].automation.liveView.waitingForYou, HAS_LATIN_WORD);
+});
+
 test("collection progress names the activity and product, and a retry names the attempt", () => {
   const copy = translations.en.automation;
   const collecting = (params: Record<string, string | number | boolean>, overrides: Partial<AutomationTaskRow> = {}) =>

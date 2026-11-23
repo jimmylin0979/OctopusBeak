@@ -51,6 +51,8 @@ export type TaskRowView = Readonly<{
   failure: TaskRowFailure | null;
   /** The run is paused in a Run intervention, waiting for the person (ADR 0147). */
   needsYou: boolean;
+  /** The run is paused behind another run's intervention and waits its turn, keeping its browser. */
+  waitingForYou: boolean;
 }>;
 
 /** Whether the row's run is paused in a Run intervention and waits for the person. */
@@ -58,18 +60,27 @@ export function runNeedsYou(row: Pick<AutomationTaskRow, "isActive" | "runInterv
   return row.isActive && row.runIntervention === "paused";
 }
 
+/** Whether the row's run is paused behind another run's intervention, waiting its turn. */
+export function runWaitingForYou(row: Pick<AutomationTaskRow, "isActive" | "runIntervention">): boolean {
+  return row.isActive && row.runIntervention === "waiting";
+}
+
 export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewContext): TaskRowView {
   const { dictionary } = context;
   const needsYou = runNeedsYou(row);
-  const statusLabel = needsYou ? dictionary.automation.liveView.needsYou : taskStatusLabel(row, dictionary);
+  const waitingForYou = runWaitingForYou(row);
+  const interventionLabel = needsYou
+    ? dictionary.automation.liveView.needsYou
+    : waitingForYou ? dictionary.automation.liveView.waitingForYou : null;
+  const statusLabel = interventionLabel ?? taskStatusLabel(row, dictionary);
   const runStatus = taskRunStatus(row, context);
   const progressWorking = workflowProgressIsWorking(row);
   const isOnboardingProgress = row.id === context.onboardingProgressTaskId;
   return {
     statusLabel,
     runStatus,
-    syncStatus: needsYou
-      ? { tone: "warn", label: dictionary.automation.liveView.needsYou, time: "" }
+    syncStatus: interventionLabel !== null
+      ? { tone: "warn", label: interventionLabel, time: "" }
       : syncStatus(row, runStatus, context),
     lastSyncSummary: lastSyncSummary(row, context),
     statementResults: statementResults(row, dictionary),
@@ -79,10 +90,11 @@ export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewConte
       || (row.isActive && row.status === "waiting_for_human")
       || (isTerminalAutomationStatus(row.status) && (row.status !== "completed" || isOnboardingProgress)),
     showProgressBar: progressWorking || (row.isActive && row.status === "waiting_for_human") || isOnboardingProgress,
-    showProgressStatus: needsYou || row.status === "waiting_for_human" || row.status === "cancelling",
+    showProgressStatus: interventionLabel !== null || row.status === "waiting_for_human" || row.status === "cancelling",
     isOnboardingProgress,
     failure: failure(row, context),
     needsYou,
+    waitingForYou,
   };
 }
 
