@@ -15,6 +15,7 @@ import {
   type RunLiveViewFrame,
   type RunLiveViewSink,
 } from "./run-live-view.ts";
+import { createRunInterventionQueue, type RunInterventionQueue } from "./run-intervention-queue.ts";
 
 const database = await createTestPGlite("operational");
 after(() => database.close());
@@ -33,7 +34,7 @@ const persistence = new Proxy(provider.automation, {
   },
 }) as AutomationPersistencePort;
 
-async function openRun(options: { scheduledAtUtc?: string } = {}) {
+async function openRun(options: { scheduledAtUtc?: string; interventionQueue?: RunInterventionQueue } = {}) {
   const { taskRunId } = await persistence.createTaskRun({
     taskId: "sinopac-statements",
     kind: "crawler",
@@ -48,6 +49,7 @@ async function openRun(options: { scheduledAtUtc?: string } = {}) {
     persistence,
     runtime: createAutomationRuntimeState(),
     dataVersionStore: createDataVersionStore(),
+    ...(options.interventionQueue ? { interventionQueue: options.interventionQueue } : {}),
   });
   await run.transition("running");
   return run;
@@ -329,6 +331,40 @@ test("input reaches the page only while the run is paused for the person, normal
   assert.equal(inputCalls(session!).length, 8);
   await liveView.closeAll();
   await run.finish({ summary: null, failure: null });
+});
+
+test("a run waiting for you behind another shows its page read-only and refuses input until its turn", async () => {
+  const interventionQueue = createRunInterventionQueue();
+  const active = await openRun({ interventionQueue });
+  const waiting = await openRun({ interventionQueue });
+  const { liveView, pages } = liveViewOver(active, waiting);
+  const pausedActive = active.interventionSafePoint(active.signal, "deadline");
+  const pausedWaiting = waiting.interventionSafePoint(waiting.signal, "deadline");
+  await tick();
+  assert.equal(waiting.intervention(), "waiting");
+
+  const { sink, frames } = recordingSink();
+  const { viewId } = await liveView.open(waiting.taskId, waiting.taskRunId, sink);
+  const [session] = pages.get(waiting.taskRunId)!.sessions;
+  session!.paint("frame-1");
+  assert.equal(frames.length, 1, "the person can watch the waiting run's page");
+  const click = { type: "click", x: 10, y: 10 };
+  await assert.rejects(liveView.input(viewId, click), /not paused/u, "a waiting run refuses input");
+  assert.equal(await liveView.handBack(viewId), false, "a waiting run has nothing to hand back yet");
+  assert.deepEqual(inputCalls(session!), []);
+
+  assert.equal(await active.handBack(), true);
+  assert.equal(await pausedActive, "handed-back");
+  assert.equal(waiting.intervention(), "paused", "its turn came");
+  await liveView.input(viewId, click);
+  assert.equal(inputCalls(session!).length, 3, "now the person controls its page");
+  assert.equal(await liveView.handBack(viewId), true);
+  assert.equal(await pausedWaiting, "handed-back");
+  await liveView.closeAll();
+  for (const run of [active, waiting]) {
+    run.currentExecution()?.end();
+    await run.finish({ summary: null, failure: null });
+  }
 });
 
 test("the view's Take over is refused while verifying, and Give up ends the paused run as a cancel", async () => {

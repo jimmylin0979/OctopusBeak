@@ -94,6 +94,8 @@
   /** Input reaches the page only once the run has paused for the person. */
   $: controlling = intervention === "paused" && view.kind === "live";
   $: waiting = intervention === "requested";
+  /** Paused behind another run's intervention: watched read-only until its turn (ADR 0147). */
+  $: queued = intervention === "waiting";
 
   async function act(action: (viewId: string) => Promise<unknown>) {
     if (view.kind !== "live" || busy) return;
@@ -208,6 +210,8 @@
     </div>
     {#if waiting}
       <p class="live-view-note" role="status">{copy.waiting}</p>
+    {:else if queued}
+      <p class="live-view-note" role="status">{copy.queued}</p>
     {:else if verifying && !controlling}
       <p class="live-view-note">{copy.verifying}</p>
     {/if}
@@ -220,7 +224,7 @@
         <button class="button primary" type="button" disabled={busy} onclick={handBack}>{copy.handBack}</button>
       {:else}
         {#if view.kind === "live"}
-          <button class="button secondary" type="button" disabled={busy || waiting || verifying} onclick={takeOver}>{copy.takeOver}</button>
+          <button class="button secondary" type="button" disabled={busy || waiting || queued || verifying} onclick={takeOver}>{copy.takeOver}</button>
         {/if}
         <button class="button secondary" type="button" onclick={onClose}>{$t.common.close}</button>
       {/if}

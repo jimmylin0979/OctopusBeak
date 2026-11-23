@@ -53,6 +53,7 @@ import {
   type TakeOverRefusal,
   type TakeOverResult,
 } from "../run-intervention.ts";
+import { createRunInterventionQueue, type RunInterventionQueue } from "./run-intervention-queue.ts";
 
 /** The timers a paused Run intervention's 5 minutes run on; the global ones by default. */
 export type InterventionTimers = Readonly<{
@@ -393,10 +394,16 @@ export function openActiveTaskRun(input: Readonly<{
   dataVersionStore?: DataVersionStore;
   /** The timers a paused intervention's timeout runs on. */
   interventionTimers?: InterventionTimers;
+  /**
+   * The host's line of Run interventions, shared by every run it opens, so
+   * only one is active at a time (ADR 0147). A run of its own by default.
+   */
+  interventionQueue?: RunInterventionQueue;
 }>): ActiveAutomationTaskRun {
   const { persistence, runtime } = input;
   const trigger = runTrigger(input.run.scheduledAtUtc);
   const timers = input.interventionTimers ?? globalTimers;
+  const interventionQueue = input.interventionQueue ?? createRunInterventionQueue();
   const taskRunId = input.run.taskRunId;
   const stopController = new AbortController();
   const forceController = new AbortController();
@@ -426,7 +433,10 @@ export function openActiveTaskRun(input: Readonly<{
   let pause: Readonly<{
     /** The Workflow execution waiting at the safe point; its end ends the pause. */
     owner: WorkflowExecution | null;
-    timer: unknown;
+    /** The 5 minutes, from when the pause became the active intervention; null while it waits. */
+    timer(): unknown;
+    /** Become the active intervention: the person controls the page and the 5 minutes start. */
+    activate(): void;
     settle(resolution: RunInterventionResolution): void;
     fail(error: Error): void;
     drop(): void;
@@ -553,10 +563,13 @@ export function openActiveTaskRun(input: Readonly<{
   const endPause = () => {
     const ended = pause;
     if (!ended) return null;
-    timers.clearTimeout(ended.timer);
+    const timer = ended.timer();
+    if (timer !== null) timers.clearTimeout(timer);
     pause = null;
     intervention = null;
     if (!finishing) publish();
+    // Last, so the run promoted next publishes after this one stopped needing you.
+    interventionQueue.leave(taskRunId);
     return ended;
   };
 
@@ -624,24 +637,31 @@ export function openActiveTaskRun(input: Readonly<{
       // An expired deadline pauses as if Take over had been pressed there, within the same cap.
       if (at === "deadline" && intervention === null && interventionRefusal() === null) intervention = "requested";
       if (intervention !== "requested") return null;
-      intervention = "paused";
+      // A pause that waits its turn is still one pause under the cap.
       pauses += 1;
-      publish();
+      let reached!: NonNullable<typeof pause>;
       const paused = new Promise<RunInterventionResolution>((resolve, reject) => {
         const onAbort = () => {
           if (pause !== current) return;
           endPause();
           reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
         };
+        let timer: unknown = null;
         const current = {
           owner: currentExecution,
-          timer: timers.setTimeout(() => {
-            if (pause !== current) return;
-            interventionTimedOut = true;
-            void noteIntervention("timed-out", "run-intervention-timed-out");
-            endPause();
-            current.settle("timed-out");
-          }, RUN_INTERVENTION_TIMEOUT_MS),
+          timer: () => timer,
+          activate() {
+            if (pause !== current || timer !== null) return;
+            intervention = "paused";
+            timer = timers.setTimeout(() => {
+              if (pause !== current) return;
+              interventionTimedOut = true;
+              void noteIntervention("timed-out", "run-intervention-timed-out");
+              endPause();
+              current.settle("timed-out");
+            }, RUN_INTERVENTION_TIMEOUT_MS);
+            publish();
+          },
           settle(resolution: RunInterventionResolution) {
             signal.removeEventListener("abort", onAbort);
             resolve(resolution);
@@ -655,20 +675,39 @@ export function openActiveTaskRun(input: Readonly<{
           },
         };
         pause = current;
+        reached = current;
         signal.addEventListener("abort", onAbort, { once: true });
       });
-      await noteIntervention("paused", "run-intervention-paused");
+      // Only one Run intervention is active at a time: behind another, the run
+      // waits for you with its browser kept, and its 5 minutes start on its turn.
+      const turn = interventionQueue.enter(taskRunId, () => {
+        // A pause that already ended must not hold the line for every run behind it.
+        if (pause !== reached) {
+          interventionQueue.leave(taskRunId);
+          return;
+        }
+        reached.activate();
+        void noteIntervention("paused", "run-intervention-paused");
+      });
+      if (turn === "active") {
+        reached.activate();
+        await noteIntervention("paused", "run-intervention-paused");
+      } else {
+        intervention = "waiting";
+        publish();
+      }
       return await paused;
     },
     async handBack() {
-      if (!pause) return false;
+      // Only the active intervention is the person's to end; a waiting one is not theirs yet.
+      if (!pause || intervention !== "paused") return false;
       const noted = noteIntervention("handed-back", "run-intervention-handed-back");
       endPause()?.settle("handed-back");
       await noted;
       return true;
     },
     async giveUp() {
-      if (!pause) return false;
+      if (!pause || intervention !== "paused") return false;
       const noted = noteIntervention("given-up", "run-intervention-given-up");
       endPause()?.settle("given-up");
       // Give up behaves as a cancel: the stop abandons the workflow's wait.

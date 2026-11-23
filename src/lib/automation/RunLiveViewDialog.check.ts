@@ -70,6 +70,18 @@ test("a watched run offers Take over; while waiting for the current step it says
   });
 });
 
+test("a run paused behind another's intervention stays read-only and says it is waiting for you", async () => {
+  await withRenderer(async (render) => {
+    const queued = await render(DIALOG, { ...props, view: live, intervention: "waiting" });
+    assert.match(queued, /<img[^>]*src="data:image\/jpeg;base64,AAAA"/, "the person can still watch its page");
+    assert.match(visibleText(queued), /View only\. Nothing you do here reaches the page\./);
+    assert.match(visibleText(queued), /This run is paused and waiting for you\. Another run needs you first/u);
+    assert.match(queued, /<button[^>]*disabled[^>]*>\s*Take over\s*<\/button>/u);
+    assert.doesNotMatch(visibleText(queued), /Hand back|Give up/u);
+    assert.doesNotMatch(queued, /live-view-control/u, "a waiting run takes no input");
+  });
+});
+
 test("Take over is unavailable while the run is verifying, though the person can still watch", async () => {
   await withRenderer(async (render) => {
     const verifying = await render(DIALOG, { ...props, view: live, intervention: null, verifying: true });

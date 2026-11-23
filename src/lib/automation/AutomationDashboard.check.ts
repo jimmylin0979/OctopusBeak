@@ -404,8 +404,8 @@ assert.match(
 );
 assert.match(
   source,
-  /\{#if present\(task\)\.showProgressStatus\}\s*<span class=\{`chip \$\{present\(task\)\.needsYou \? "warn" : statusClass\(task\.status\)\}`\}>\{present\(task\)\.statusLabel\}<\/span>/u,
-  "the card's chip reads Needs you while its run is paused",
+  /\{#if present\(task\)\.showProgressStatus\}\s*<span class=\{`chip \$\{present\(task\)\.needsYou \|\| present\(task\)\.waitingForYou \? "warn" : statusClass\(task\.status\)\}`\}>\{present\(task\)\.statusLabel\}<\/span>/u,
+  "the card's chip reads Needs you while its run is paused, and Waiting for you while it waits behind another",
 );
 
 assert.match(

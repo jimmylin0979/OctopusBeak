@@ -12,6 +12,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { AppWorkflowWorkerHandle, ExecutionHost, WorkerLaunch } from "./execution-host.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
 import { openActiveTaskRun, type WorkflowExecution } from "./active-task-run.ts";
+import { createRunInterventionQueue } from "./run-intervention-queue.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import {
   CHECK_PGLITE_RPC,
@@ -1045,6 +1046,56 @@ test("a sign-in deadline pauses a manual run through the intervention host call,
       page: { kind: "step-wait-timeout", host: "bank.test", path: "/login" },
     });
     assert.deepEqual(scheduled.finished.interventionLog ?? [], []);
+  } finally {
+    await store.close();
+  }
+});
+
+test("two manual runs whose sign-in deadlines expire together take turns: one is paused for you while the other waits", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
+    const interventionQueue = createRunInterventionQueue();
+    const started = await Promise.all([0, 1].map(async (index) => {
+      const pending = new Set<() => void>();
+      const taskRunId = await createRun(provider, task);
+      const run = openActiveTaskRun({
+        run: (await provider.automation.taskRunById(taskRunId))!,
+        persistence: provider.automation,
+        runtime: createAutomationRuntimeState(),
+        interventionTimers: {
+          setTimeout: (callback: () => void) => { pending.add(callback); return callback; },
+          clearTimeout: (timer: unknown) => { pending.delete(timer as () => void); },
+        },
+        interventionQueue,
+      });
+      let worker: DeadlineFakeWorker | undefined;
+      const execute = createTaskRunExecution(inProcessCheckHost({
+        scriptedWorker: (start) => (worker = new DeadlineFakeWorker(start, 1)),
+      }));
+      const reported = execute(plan, run, { attempt: 1, maxAttempts: 1, executionId: `round-${index}`, retrying: false });
+      return { run, reported, pending, answers: () => worker?.answers ?? [] };
+    }));
+    const states = () => started.map(({ run }) => run.intervention());
+    await until(() => states().includes("paused") && states().includes("waiting"), "both runs reach their deadline");
+    const first = started.find(({ run }) => run.intervention() === "paused")!;
+    const second = started.find(({ run }) => run.intervention() === "waiting")!;
+    assert.equal(second.pending.size, 0, "the waiting run's 5 minutes have not started");
+
+    assert.equal(await first.run.handBack(), true);
+    await until(() => second.run.intervention() === "paused", "the waiting run's turn comes");
+    assert.equal(second.pending.size, 1, "its 5 minutes start on its turn");
+    assert.equal(await second.run.handBack(), true);
+
+    for (const { run, reported, answers } of [first, second]) {
+      const finished = await run.finish(await reported);
+      assert.equal(finished.status, "completed");
+      assert.deepEqual(answers(), ["handed-back"]);
+      assert.deepEqual(finished.interventionLog?.map((entry) => entry.action), ["paused", "handed-back"]);
+    }
   } finally {
     await store.close();
   }

@@ -45,10 +45,12 @@ export type RunInterventionEntry = Readonly<{ action: RunInterventionAction; at:
 
 /**
  * Where a run's intervention stands: Take over was pressed and the run has not
- * reached a safe point yet, or the run is paused and the person controls the
- * page. A run with neither has no intervention.
+ * reached a safe point yet; the run has paused but waits for you while another
+ * run's intervention is active, keeping its browser; or the run is paused and
+ * the person controls the page. A run with none of these has no intervention.
+ * Only one run is paused for the person at a time (ADR 0147).
  */
-export type RunInterventionState = "requested" | "paused";
+export type RunInterventionState = "requested" | "waiting" | "paused";
 
 /** How a paused intervention ended, as the workflow waiting at its safe point hears it. */
 export const RUN_INTERVENTION_RESOLUTIONS = ["handed-back", "given-up", "timed-out"] as const;
