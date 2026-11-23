@@ -137,7 +137,10 @@ function createPage(options: {
     last() { return this; },
     nth() { return this; },
     filter() { return this; },
-    isVisible: async () => selector.startsWith("form input") || (selector === "#btnHeaderLogout" && probeSignedIn()),
+    isVisible: async () => selector.startsWith("form input")
+      || (selector === "#btnHeaderLogout" && probeSignedIn())
+      // The pages the collection waits for (ADR 0147) are showing.
+      || ["a.dropdown-item", "a.nav-link", "text:臺幣/轉帳", "text:臺幣存款概要"].includes(selector),
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? (options.precedingEmptyRange ? 2 : 1) : 0,
     textContent: async () => "2026/08",
@@ -160,7 +163,7 @@ function createPage(options: {
       if (index < 0) throw new Error("No synthetic CTBC response matched.");
       return responses.splice(index, 1)[0]!;
     },
-    getByText: () => locator("unavailable-prompt"),
+    getByText: (text: string) => locator(`text:${text}`),
     getByRole: () => ({
       click: async () => undefined,
       waitFor: async () => undefined,

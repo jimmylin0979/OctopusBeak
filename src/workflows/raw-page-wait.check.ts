@@ -13,10 +13,12 @@ import { test } from "node:test";
  * A raw wait is a Playwright `waitFor…` call, a frame scope's `until`,
  * `scopeWith`, `firstVisible`, `frame` or `settle`, or a hand-rolled
  * `Date.now() + …` deadline. Fixed pauses and Playwright's own actionability
- * waits inside a click are not page-state waits.
+ * waits inside a click are not page-state waits. A site's `expect` receiver
+ * (`expect.until`, `expect.firstVisible`) is its binding of `expectPageState`
+ * and is not a raw wait.
  */
 const RAW_WAIT =
-  /\.waitFor[A-Za-z]*\(|\.until\(|\.scopeWith\(|\.firstVisible\(|\.frame\((?!\s*\{)|\.settle\(|Date\.now\(\) \+/u;
+  /\.waitFor[A-Za-z]*\(|(?<!\bexpect)\.until\(|\.scopeWith\(|(?<!\bexpect)\.firstVisible\(|\.frame\((?!\s*\{)|\.settle\(|Date\.now\(\) \+/u;
 
 /** The modules that define the waits themselves. */
 const WAIT_MODULES = new Set(["frame-scope.ts", "page-state-wait.ts"]);
@@ -115,20 +117,20 @@ const CLASSIFIED: Readonly<Record<string, readonly Classified[]>> = {
 const PENDING: Readonly<Record<string, Readonly<{ atMost: number; ticket: string }>>> = {
   "fubon-all-statements.ts": { atMost: 1, ticket: "#9" },
   "fubon-auth.ts": { atMost: 12, ticket: "#9" },
-  "fubon-credit-card-statements.ts": { atMost: 10, ticket: "#9" },
-  "fubon-current-deposit-balances.ts": { atMost: 4, ticket: "#9" },
-  "fubon-ebank-site.ts": { atMost: 4, ticket: "#9" },
-  "fubon-loan-statements.ts": { atMost: 12, ticket: "#9" },
-  "fubon-statements.ts": { atMost: 6, ticket: "#9" },
+  "fubon-credit-card-statements.ts": { atMost: 3, ticket: "#9" },
+  "fubon-current-deposit-balances.ts": { atMost: 1, ticket: "#9" },
+  "fubon-ebank-site.ts": { atMost: 2, ticket: "#9" },
+  "fubon-loan-statements.ts": { atMost: 10, ticket: "#9" },
+  "fubon-statements.ts": { atMost: 4, ticket: "#9" },
   "yuanta-auth.ts": { atMost: 6, ticket: "#10" },
-  "yuanta-credit-card-statements.ts": { atMost: 10, ticket: "#10" },
-  "yuanta-current-deposit-balances.ts": { atMost: 3, ticket: "#10" },
+  "yuanta-credit-card-statements.ts": { atMost: 7, ticket: "#10" },
+  "yuanta-current-deposit-balances.ts": { atMost: 1, ticket: "#10" },
   "yuanta-ebank-site.ts": { atMost: 8, ticket: "#10" },
-  "yuanta-foreign-currency-statements.ts": { atMost: 13, ticket: "#10" },
-  "yuanta-fund-statements.ts": { atMost: 5, ticket: "#10" },
-  "yuanta-loan-statements.ts": { atMost: 8, ticket: "#10" },
+  "yuanta-foreign-currency-statements.ts": { atMost: 11, ticket: "#10" },
+  "yuanta-fund-statements.ts": { atMost: 3, ticket: "#10" },
+  "yuanta-loan-statements.ts": { atMost: 6, ticket: "#10" },
   "yuanta-statements.ts": { atMost: 6, ticket: "#10" },
-  "yuanta-trade-statements.ts": { atMost: 7, ticket: "#10" },
+  "yuanta-trade-statements.ts": { atMost: 6, ticket: "#10" },
 };
 
 const WORKFLOWS = new URL(".", import.meta.url);
