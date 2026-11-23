@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import type { Frame, Locator, Page } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { WorkflowInterventionPort } from "../lib/automation/workflow-executor.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import { expectPageState } from "./page-state-wait.ts";
 import { isDeclaredProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
@@ -38,12 +40,39 @@ export type YuantaCsvDownload = Readonly<{
   exportUrl: string;
 }>;
 
+type WaitOptions = Readonly<{ timeoutMs?: number }>;
+
+/**
+ * Collection's waits for a page state the step expects (ADR 0147), shaped
+ * like the frame scope's own. Each pass is a Run intervention safe point, and
+ * an expired one pauses a manual run; after Hand back the page is checked
+ * again. Use them only to read the page, never for an optional wait that is
+ * expected to time out, nor around a request or a one-time click.
+ */
+export type YuantaPageStateWaits = Readonly<{
+  until<T>(probe: () => Promise<T | null | undefined | false>, failure: string, options?: WaitOptions): Promise<T>;
+  /** The first scope in which the locator matches an attached element. */
+  scopeWith(
+    target: string | ((scope: BrowserScope) => Locator),
+    description?: string,
+    options?: WaitOptions,
+  ): Promise<BrowserScope>;
+  /** The first visible match, searching one scope or every scope in order. */
+  firstVisible(
+    locatorFor: (scope: BrowserScope) => Locator,
+    description: string,
+    options?: WaitOptions & Readonly<{ in?: BrowserScope }>,
+  ): Promise<Locator>;
+}>;
+
 /**
  * The signed-in Yuanta eBank site (ADR 0066): an fmenu/fmain frameset whose
  * pages are server-rendered routes bound to the session's cid.
  */
 export type YuantaEbankSite = Readonly<{
   frames: FrameScope;
+  /** Expected-page-state waits over `frames` with the run's Run intervention points. */
+  expect: YuantaPageStateWaits;
   cid(): Promise<string | null>;
   /** Open a product's page from any signed-in page and return the scope that shows it. */
   open(route: YuantaRoute): Promise<BrowserScope>;
@@ -68,7 +97,14 @@ export type YuantaEbankSite = Readonly<{
   readCsv(link: Locator, reader: ProviderResponseReader): Promise<YuantaCsvDownload>;
 }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort }>;
+type SiteContext = Readonly<{
+  signal: AbortSignal;
+  text: SourceTextPort;
+  /** The run's Run intervention points, which the expected-page-state waits consult (ADR 0147). */
+  intervention?: WorkflowInterventionPort;
+  /** How long an expected page state may take by default; 60 s. */
+  pageStateTimeoutMs?: number;
+}>;
 
 const cidFromUrl = (url: string): string | null => {
   const match = url.match(/[?&]cid=([^&]+)/u);
@@ -84,8 +120,48 @@ export function yuantaRouteUrl(path: string, cid: string | null): string {
   return url.toString();
 }
 
+/** Expected-page-state waits over a frame scope (ADR 0147). */
+function pageStateWaits(frames: FrameScope, context: SiteContext): YuantaPageStateWaits {
+  const until = <T>(
+    probe: () => Promise<T | null | undefined | false>,
+    failure: string,
+    options: WaitOptions = {},
+  ): Promise<T> => {
+    const timeoutMs = options.timeoutMs ?? context.pageStateTimeoutMs;
+    return expectPageState(frames, context.intervention, probe, failure, timeoutMs === undefined ? {} : { timeoutMs });
+  };
+  const timeoutOf = (options: WaitOptions): WaitOptions =>
+    options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs };
+  return {
+    until,
+    scopeWith: (target, description, options = {}) => {
+      const locatorFor = typeof target === "string" ? (scope: BrowserScope) => scope.locator(target) : target;
+      const label = description ?? (typeof target === "string" ? `selector "${target}"` : "the element");
+      return until(async () => {
+        for (const scope of frames.scopes()) {
+          if ((await locatorFor(scope).count().catch(() => 0)) > 0) return scope;
+        }
+        return null;
+      }, `Could not find ${label} in any frame.`, timeoutOf(options));
+    },
+    firstVisible: (locatorFor, description, options = {}) =>
+      until(async () => {
+        for (const scope of options.in ? [options.in] : frames.scopes()) {
+          const locator = locatorFor(scope);
+          const count = await locator.count().catch(() => 0);
+          for (let index = 0; index < count; index += 1) {
+            const candidate = locator.nth(index);
+            if (await candidate.isVisible().catch(() => false)) return candidate;
+          }
+        }
+        return null;
+      }, `Could not find a visible ${description}.`, timeoutOf(options)),
+  };
+}
+
 export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSite {
   const frames = frameScope(page, context.signal);
+  const expect = pageStateWaits(frames, context);
 
   const cid = async (): Promise<string | null> => {
     for (const scope of frames.scopes()) {
@@ -101,24 +177,26 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
     return cidFromUrl(page.url());
   };
 
-  const showing = (route: YuantaRoute, timeoutMs?: number) =>
-    frames.until(async () => {
-      for (const scope of frames.scopes()) {
-        if (await route.ready(scope)) return scope;
-      }
-      return null;
-    }, `Could not find ${route.description} in any frame.`, { timeoutMs });
+  const showsRoute = (route: YuantaRoute) => async () => {
+    for (const scope of frames.scopes()) {
+      if (await route.ready(scope)) return scope;
+    }
+    return null;
+  };
+  const notShowing = (route: YuantaRoute) => `Could not find ${route.description} in any frame.`;
 
-  const menuAction = async (path: string, menuId: string, timeoutMs = MENU_ACTION_TIMEOUT_MS) => {
-    const scope = await frames.until(async () => {
-      for (const candidate of frames.scopes()) {
-        const exposed = await candidate
-          .evaluate(() => typeof (window as { menuaction?: unknown }).menuaction === "function")
-          .catch(() => false);
-        if (exposed) return candidate;
-      }
-      return null;
-    }, "Could not find YuanTa menuaction() in any frame.", { timeoutMs });
+  const exposingMenuAction = async () => {
+    for (const candidate of frames.scopes()) {
+      const exposed = await candidate
+        .evaluate(() => typeof (window as { menuaction?: unknown }).menuaction === "function")
+        .catch(() => false);
+      if (exposed) return candidate;
+    }
+    return null;
+  };
+  const NO_MENU_ACTION = "Could not find YuanTa menuaction() in any frame.";
+
+  const invokeMenuAction = async (scope: BrowserScope, path: string, menuId: string) => {
     await frames.race(scope.evaluate(({ action, id }) => {
       const menuaction = (window as { menuaction?: (action: string, id: string, flag: string) => void }).menuaction;
       if (typeof menuaction !== "function") throw new Error("YuanTa page did not expose menuaction().");
@@ -126,7 +204,13 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
     }, { action: path, id: menuId }));
   };
 
+  // A plain wait: a caller may run this inside a provider-reply wait's trigger, which must not pause.
+  const menuAction = async (path: string, menuId: string, timeoutMs = MENU_ACTION_TIMEOUT_MS) => {
+    await invokeMenuAction(await frames.until(exposingMenuAction, NO_MENU_ACTION, { timeoutMs }), path, menuId);
+  };
+
   const fmain = async (): Promise<Frame> => {
+    // A shell without fmain is a lost session, decided at once rather than paused over.
     const frame = await ifFound(frames.frame("fmain", { timeoutMs: SHELL_TIMEOUT_MS }));
     if (!frame) throw new FailureCodeError("authentication-failed");
     return frame;
@@ -134,6 +218,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
 
   const site: YuantaEbankSite = {
     frames,
+    expect,
     cid,
     open: async (route) => {
       const content = await fmain();
@@ -142,20 +227,24 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         const url = yuantaRouteUrl(route.path, sessionCid);
         await frames.withSignal((signal) => content.goto(url, { waitUntil: "domcontentloaded", signal }));
         await frames.settle(content);
-        if (!route.menuId) return await showing(route);
-        const rendered = await ifFound(showing(route, ROUTE_RENDER_TIMEOUT_MS));
+        if (!route.menuId) return await expect.until(showsRoute(route), notShowing(route));
+        // A route that does not render its page is expected: menuaction() renders it instead.
+        const rendered = await ifFound(
+          frames.until(showsRoute(route), notShowing(route), { timeoutMs: ROUTE_RENDER_TIMEOUT_MS }),
+        );
         if (rendered) return rendered;
       } else if (!route.menuId) {
         throw new FailureCodeError("authentication-failed");
       }
-      await menuAction(route.path, route.menuId);
+      const menu = await expect.until(exposingMenuAction, NO_MENU_ACTION, { timeoutMs: MENU_ACTION_TIMEOUT_MS });
+      await invokeMenuAction(menu, route.path, route.menuId);
       await frames.settle(content);
-      return await showing(route);
+      return await expect.until(showsRoute(route), notShowing(route));
     },
     menuAction,
     chooseDuration: async (scope, duration) => {
       const label = "label" in duration ? duration.label : duration.customLabel;
-      const link = await frames.firstVisible(
+      const link = await expect.firstVisible(
         (candidate) => candidate.locator("#duration a").filter({ hasText: label }),
         `YuanTa date range link "${label}"`,
         { in: scope },
@@ -183,7 +272,8 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         : null;
       early?.catch(() => undefined);
       await frames.settle(content);
-      const scope = await showing(route);
+      // A plain wait: the document read is this navigation's, so a page the person fixed would not be it.
+      const scope = await frames.until(showsRoute(route), notShowing(route));
       if (!served) throw new Error(`${route.description} navigation served no document.`);
       const acquired = await (early ?? read(served));
       return { scope, html: (await reader.accept(declaration, acquired)).evidence.text };
