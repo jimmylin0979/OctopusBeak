@@ -110,7 +110,10 @@ export interface WorkflowInterventionHostPort {
  * User-action Failure after 5 minutes.
  */
 export interface WorkflowInterventionPort {
-  /** Pauses only when a Take over is waiting. */
+  /**
+   * Pauses only when a Take over is waiting. A wait may ask at every poll:
+   * the run consults the host about once a second (SAFE_POINT_CONSULT_MS).
+   */
   safePoint(): Promise<"none" | "handed-back">;
   /**
    * A step's wait for an expected page state timed out. A manual run pauses
@@ -379,12 +382,22 @@ function stopRecordingBrowserPort(browser: WorkflowBrowserPort, signal: AbortSig
   return { port, stoppedUrl: () => stoppedUrl };
 }
 
+/**
+ * A safe point that answered `none` is not asked again for this long, across
+ * every wait of the run (ADR 0147). It bounds how soon a Take over is heard,
+ * and keeps the run within the host's consult rate however many waits poll.
+ */
+export const SAFE_POINT_CONSULT_MS = 1_000;
+
 /** The workflow's intervention points over the host's answer; an answer that ends the run throws. */
 function interventionPort(host: WorkflowInterventionHostPort, signal: AbortSignal): WorkflowInterventionPort {
+  let ranOnAt = Number.NEGATIVE_INFINITY;
   const consult = async (at: InterventionPoint): Promise<"none" | "handed-back"> => {
     signal.throwIfAborted();
+    if (at === "safe-point" && Date.now() - ranOnAt < SAFE_POINT_CONSULT_MS) return "none";
     const answer = await host.consult(signal, at);
     signal.throwIfAborted();
+    if (at === "safe-point" && answer === "none") ranOnAt = Date.now();
     if (answer === "timed-out") {
       throw new FailureCodeError(INTERVENTION_TIMED_OUT, "The run paused for the person, who did not come back in time.");
     }

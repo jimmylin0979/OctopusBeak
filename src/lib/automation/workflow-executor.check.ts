@@ -544,13 +544,18 @@ test("a safe point runs on or resumes after Hand back, and an intervention that 
     async run(context) {
       assert.ok(context.intervention);
       seen.push(await context.intervention.safePoint());
+      // Waits ask at every poll; the run consults the host about once a second, so a long run stays within its bound.
+      for (let poll = 0; poll < 5; poll += 1) seen.push(await context.intervention.safePoint());
+      assert.equal(consults, 1, "a safe point asked again within the second runs on without consulting the host");
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
       seen.push(await context.intervention.safePoint());
+      // A Hand back is no reason to wait: the next safe point consults at once.
       await context.intervention.safePoint();
       seen.push("unreachable");
     },
   }], { ...ports(events), intervention: { consult: async () => answers[consults++]! } });
   const error = await executor.run("browser-example", "run-safe", null, new AbortController().signal).catch((thrown: unknown) => thrown);
-  assert.deepEqual(seen, ["none", "handed-back"]);
+  assert.deepEqual(seen, ["none", "none", "none", "none", "none", "none", "handed-back"]);
   assert.ok(error instanceof FailureCodeError);
   assert.equal(error.errorCode, "run-intervention-timed-out");
   assert.equal(classifyFailure({ error, events, stopped: false }), "run-intervention-timed-out");
