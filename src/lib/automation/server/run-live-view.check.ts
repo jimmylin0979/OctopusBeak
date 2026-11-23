@@ -58,6 +58,8 @@ async function openRun(options: { scheduledAtUtc?: string; interventionQueue?: R
 type FakeCdp = LiveViewCdpSession & {
   sent: Array<[string, unknown]>;
   detached: boolean;
+  /** How long each call takes to reach the browser; none by default. */
+  sendDelayMs: number;
   /** The browser paints a frame. */
   paint(data: string, sessionId?: number): void;
 };
@@ -87,7 +89,9 @@ function fakePage() {
       const session: FakeCdp = {
         sent: [],
         detached: false,
+        sendDelayMs: 0,
         async send(method, params) {
+          if (session.sendDelayMs) await new Promise((resolve) => setTimeout(resolve, session.sendDelayMs));
           session.sent.push([method, params]);
           return {};
         },
@@ -438,6 +442,37 @@ test("input reaches the page only while the run is paused for the person, normal
   assert.equal(await paused, "handed-back");
   await assert.rejects(liveView.input(viewId, click), /not paused/u, "after Hand back, input is refused again");
   assert.equal(inputCalls(session!).length, 8);
+  await liveView.closeAll();
+  await run.finish({ summary: null, failure: null });
+});
+
+test("keys sent without waiting for each other reach the page whole and in order", async () => {
+  const run = await openRun();
+  const { liveView, pages } = liveViewOver(run);
+  const { sink } = recordingSink();
+  const { viewId } = await liveView.open(run.taskId, run.taskRunId, sink);
+  const [session] = pages.get(run.taskRunId)!.sessions;
+  assert.deepEqual(await liveView.takeOver(viewId), { ok: true });
+  const paused = run.interventionSafePoint(run.signal);
+  await tick();
+
+  // Each CDP call takes a moment, as it does in a real browser.
+  session!.sendDelayMs = 2;
+  const before = session!.sent.length;
+  // A person typing quickly: the renderer does not wait for one key before sending the next.
+  await Promise.all(["e", "e", "r"].map((key) => liveView.input(viewId, { type: "press", key })));
+
+  assert.deepEqual(
+    session!.sent.slice(before).map(([, params]) => {
+      const event = params as { type: string; key: string };
+      return `${event.type}:${event.key}`;
+    }),
+    ["keyDown:e", "keyUp:e", "keyDown:e", "keyUp:e", "keyDown:r", "keyUp:r"],
+    "a key's down and up are never interleaved with the next key's",
+  );
+
+  assert.equal(await liveView.handBack(viewId), true);
+  assert.equal(await paused, "handed-back");
   await liveView.closeAll();
   await run.finish({ summary: null, failure: null });
 });

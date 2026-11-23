@@ -56,6 +56,8 @@ type View = {
   page: Page;
   session: LiveViewCdpSession;
   sink: RunLiveViewSink;
+  /** The last input still being sent; the next input starts after it. */
+  inputTail: Promise<void>;
   release(): void;
 };
 
@@ -174,6 +176,7 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
       page,
       session,
       sink,
+      inputTail: Promise.resolve(),
       release() {
         page.off("close", onPageClose);
         stopListening();
@@ -234,9 +237,14 @@ export function createRunLiveView(deps: RunLiveViewDeps) {
     async input(viewId: string, raw: unknown): Promise<void> {
       const view = openView(viewId);
       if (view.run.intervention() !== "paused") throw new Error("The run is not paused for you.");
-      for (const [method, params] of cdpInput(normalizeViewerInput(raw, { printableKeys: true }))) {
-        await view.session.send(method, params);
-      }
+      const calls = cdpInput(normalizeViewerInput(raw, { printableKeys: true }));
+      // The renderer does not wait for one input before sending the next. Each runs whole,
+      // in arrival order, so a key's down and up are never interleaved with another key's.
+      const turn = view.inputTail.then(async () => {
+        for (const [method, params] of calls) await view.session.send(method, params);
+      });
+      view.inputTail = turn.catch(() => undefined);
+      await turn;
     },
     /**
      * Open a view of the task's running manual run, ending any other view first.
